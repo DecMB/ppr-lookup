@@ -2,80 +2,202 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PPR address lookup - spike demo</title>
 <style>
-  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; background: #fff; }
-  @media (prefers-color-scheme: dark) {
-    body { color: #e8e8e8; background: #121212; }
-    .note { color: #aaa; }
-    input[type=text] { background: #1e1e1e; color: #e8e8e8; border-color: #444; }
-    td, th { border-bottom-color: #333; }
-    .score { color: #999; }
+  :root {
+    --ink: #1a1a1a;
+    --bg: #fff;
+    --muted: #666;        /* ~5.8:1 on --bg - was #888 (~3.8:1, fails 4.5:1) */
+    --border: #ccc;
+    --border-subtle: #eee;
+    --surface: #f7f7f7;
+    --accent: #2a5adb;
+    --error: #b00020;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   }
-  h1 { font-size: 20px; }
-  .note { color: #666; font-size: 13px; margin-bottom: 24px; }
-  input[type=text] { width: 100%; padding: 10px; font-size: 15px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
-  button { margin-top: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
-  #result { margin-top: 24px; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e8e8e8;
+      --bg: #121212;
+      --muted: #aaa;       /* ~7.9:1 on --bg */
+      --border: #444;
+      --border-subtle: #2a2a2a;
+      --surface: #1a1a1a;
+      --accent: #6f9bff;
+      --error: #ff6b6b;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; margin: 0; color: var(--ink); background: var(--bg); }
+  .page { max-width: 640px; margin: 0 auto; padding: 0 16px 40px; }
+  h1 { font-size: 20px; letter-spacing: -0.01em; margin: 0; }
+  h3 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); }
+  .note { color: var(--muted); font-size: 13px; text-wrap: pretty; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  input[type=text] { width: 100%; padding: 10px; font-size: 15px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--ink); transition: border-color 150ms var(--ease-out); }
+  input[type=text]:focus-visible { border-color: var(--accent); }
+  button {
+    padding: 8px 16px; font-size: 15px; cursor: pointer; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--ink);
+    transition: background-color 150ms var(--ease-out), border-color 150ms var(--ease-out), transform 100ms var(--ease-out);
+  }
+  button:hover { border-color: var(--accent); }
+  button:active { transform: scale(0.97); }
+
+  #result { margin-top: 28px; animation: fade-in 200ms var(--ease-out); }
+  #result > section + section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
   .price { font-weight: 600; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-  td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 14px; }
-  .score { color: #888; font-size: 12px; }
-  .empty { color: #888; font-style: italic; }
-  .error { color: #b00020; }
+  td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); font-size: 15px; }
+  .score { color: var(--muted); font-size: 13px; }
+  .empty { color: var(--muted); font-style: italic; }
+  .error { color: var(--error); }
+
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
   .badge.confirmed { background: #d4edda; color: #155724; }
   .badge.unconfirmed { background: #fff3cd; color: #856404; }
   .badge.bulk { background: #dbe4ff; color: #2a3f8f; }
   @media (prefers-color-scheme: dark) {
-    .error { color: #ff6b6b; }
     .badge.confirmed { background: #17351f; color: #6fd18a; }
     .badge.unconfirmed { background: #3a2f0a; color: #e0c257; }
     .badge.bulk { background: #1c2547; color: #9fb2ff; }
   }
-  #cameraWrap { position: relative; margin-top: 8px; display: none; border-radius: 8px; overflow: hidden; background: #000; }
-  #cameraWrap.active { display: block; }
-  #cameraVideo { width: 100%; display: block; max-height: 55vh; object-fit: cover; }
+
+  /* --- camera: the default view --- */
+  #cameraWrap {
+    position: relative; width: 100%; min-height: 68vh; min-height: 68dvh;
+    background: #000; overflow: hidden;
+  }
+  #cameraVideo { width: 100%; height: 100%; position: absolute; inset: 0; display: block; object-fit: cover; }
+  #cameraFallback {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px; padding: 32px; text-align: center; color: #fff;
+    background: linear-gradient(180deg, #1c1c1e, #000);
+  }
+  #cameraWrap.no-camera #cameraFallback { display: flex; }
+  #cameraWrap.no-camera #cameraVideo { display: none; }
+
+  /* Apple-style liquid glass: frosted, translucent, glossy top edge.
+     Only ever composited over the live camera feed or its fallback
+     gradient, not the page background, so it doesn't need separate
+     light/dark tokens - it reads the same "glass over dark video"
+     either way. Purposeful here (per the skill's glass ban: rare and
+     purposeful, not decorative-by-default) - it's standing in for the
+     same material Apple's own Camera/Control Center chrome uses. */
+  .glass {
+    background: rgba(255,255,255,0.14);
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255,255,255,0.28);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.35);
+    color: #fff;
+  }
+
+  #cameraTopBar {
+    position: absolute; top: 0; left: 0; right: 0; padding: 14px 16px;
+    padding-top: max(14px, env(safe-area-inset-top));
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: linear-gradient(180deg, rgba(0,0,0,0.5), transparent);
+  }
+  #cameraTopBar h1 { color: #fff; font-size: 17px; }
   #headingOverlay {
-    position: absolute; top: 10px; left: 10px; padding: 4px 10px;
-    background: rgba(0,0,0,0.55); color: #fff; font-size: 13px;
-    border-radius: 6px; font-variant-numeric: tabular-nums;
+    padding: 5px 12px; font-size: 13px; border-radius: 999px;
+    font-variant-numeric: tabular-nums;
   }
   #crosshair {
-    position: absolute; top: 50%; left: 50%; width: 28px; height: 28px;
-    transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.85);
+    position: absolute; top: 50%; left: 50%; width: 30px; height: 30px;
+    transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.9);
     border-radius: 50%; pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.25);
+  }
+
+  #cameraBottomBar {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 16px;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    background: linear-gradient(0deg, rgba(0,0,0,0.55), transparent);
   }
   #lookupBtn {
-    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-    padding: 10px 20px; border-radius: 20px; border: none; background: #fff;
-    font-weight: 600; cursor: pointer;
+    padding: 14px 28px; border-radius: 999px; border: none; font-weight: 600;
+    font-size: 15px; cursor: pointer; transition: transform 100ms var(--ease-out);
   }
-  .cam-note { font-size: 12px; color: #888; margin-top: 4px; }
+  #lookupBtn:active { transform: scale(0.96); }
+  #manualEntryToggle {
+    padding: 9px 18px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: transform 100ms var(--ease-out), background-color 150ms var(--ease-out);
+  }
+  #manualEntryToggle:hover { background: rgba(255,255,255,0.22); }
+  #manualEntryToggle:active { transform: scale(0.96); }
+  .cam-note { font-size: 13px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.6); margin: 0; min-height: 1.2em; }
+
+  /* --- manual entry: a glass sheet over the camera, not a separate page --- */
+  #manualPanel {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+    padding: 20px 16px; padding-bottom: max(20px, env(safe-area-inset-bottom));
+    border-radius: 20px 20px 0 0; transform: translateY(100%);
+    transition: transform 320ms var(--ease-out);
+  }
+  #manualPanel.open { transform: translateY(0); }
+  #manualPanel .note { color: rgba(255,255,255,0.75); margin-bottom: 12px; }
+  #manualPanel input[type=text] { background: rgba(0,0,0,0.25); border-color: rgba(255,255,255,0.3); color: #fff; }
+  #manualPanel input[type=text]::placeholder { color: rgba(255,255,255,0.6); }
+  #manualPanel button { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.3); color: #fff; }
+  #manualPanel button:hover { background: rgba(255,255,255,0.26); }
+  #panelHandle { width: 36px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.4); margin: 0 auto 14px; }
+
+  @keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
 </style>
 </head>
 <body>
-  <h1>PPR address lookup</h1>
-  <p class="note">
-    Type an address, or use your device's real location - both are stand-ins
-    for the camera-scan step, which needs a building-footprint dataset this
-    spike hasn't sourced. Price history only; no BER data (still blocked
-    pending SEAI/CSO).
-  </p>
-  <input type="text" id="q" placeholder="e.g. 5 Braemor Drive, Churchtown, Dublin" autofocus>
-  <button onclick="doSearch()">Search</button>
-  <button onclick="useMyLocation()" id="locBtn">Use my location</button>
-  <button onclick="startCamera()" id="camBtn">Point camera</button>
 
   <div id="cameraWrap">
     <video id="cameraVideo" autoplay playsinline muted></video>
-    <div id="headingOverlay">heading: waiting...</div>
-    <div id="crosshair"></div>
-    <button id="lookupBtn" onclick="lookupFacing()">Look up this building</button>
-  </div>
-  <p class="cam-note" id="camNote"></p>
+    <div id="cameraFallback">
+      <h1 style="font-size:17px;">PPR address lookup</h1>
+      <p class="note" style="color:rgba(255,255,255,0.75)">
+        Camera unavailable (denied, or no camera on this device) - use the
+        address search below instead.
+      </p>
+    </div>
 
-  <div id="result"></div>
+    <div id="cameraTopBar">
+      <h1>PPR lookup</h1>
+      <div id="headingOverlay" class="glass">heading: waiting&hellip;</div>
+    </div>
+    <div id="crosshair"></div>
+
+    <div id="cameraBottomBar">
+      <p class="cam-note" id="camNote"></p>
+      <button id="lookupBtn" class="glass" onclick="lookupFacing()">Look up this building</button>
+      <button id="manualEntryToggle" class="glass" onclick="toggleManualPanel()">Enter address instead</button>
+    </div>
+
+    <div id="manualPanel" class="glass">
+      <div id="panelHandle"></div>
+      <p class="note">
+        Type an address, or use your device's real location - both are
+        stand-ins for full building-level identification, which needs a
+        footprint dataset this spike hasn't sourced.
+      </p>
+      <input type="text" id="q" placeholder="e.g. 5 Braemor Drive, Churchtown, Dublin">
+      <div class="controls">
+        <button onclick="doSearch()">Search</button>
+        <button onclick="useMyLocation()">Use my location</button>
+        <button onclick="toggleManualPanel()">Back to camera</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page">
+    <div id="result"></div>
+  </div>
 
 <script>
 function renderResult(data) {
@@ -100,7 +222,7 @@ function renderResult(data) {
   const rowLabel = (r) => r.address + (r.is_bulk_sale ? bulkBadge : '')
     + (r.size_description ? `<br><span class="note">size band: ${r.size_description}</span>` : '');
 
-  html += `<h3>Sale history (${data.n_sales})</h3>`;
+  html += `<section><h3>Sale history (${data.n_sales})</h3>`;
   if (data.sale_history.length === 0) {
     html += '<p class="empty">No sales found for this exact address.</p>';
   } else {
@@ -110,11 +232,12 @@ function renderResult(data) {
     }
     html += '</table>';
   }
+  html += '</section>';
 
   if (data.valuation) {
     const v = data.valuation;
     const sign = v.county_price_change_pct >= 0 ? '+' : '';
-    html += `<h3>Estimated value today</h3>`;
+    html += `<section><h3>Estimated value today</h3>`;
     html += `<p><span class="price">&euro;${v.estimated_value.toLocaleString(undefined, {maximumFractionDigits: 0})}</span> `;
     html += `<span class="badge unconfirmed">estimate, not a valuation</span></p>`;
     html += `<p class="note">Based on the last known sale (${v.based_on_sale_year}), scaled by the county median price `
@@ -123,12 +246,12 @@ function renderResult(data) {
       + `${v.index_latest_year} n=${v.index_sample_sizes[v.index_latest_year]}`
       + `${v.index_latest_year === '2026' ? ' (2026 is a partial year)' : ''}. `
       + `County-wide trend applied to one property - not a substitute for an actual appraisal, `
-      + `and takes no account of this property's own condition, renovations, or features.</p>`;
+      + `and takes no account of this property's own condition, renovations, or features.</p></section>`;
   } else if (data.sale_history.length && data.sale_history[data.sale_history.length - 1].is_bulk_sale) {
-    html += `<h3>Estimated value today</h3><p class="empty">Not estimated - the only sale on record is a bulk/institutional sale of the whole building, not a comparable single-property transaction.</p>`;
+    html += `<section><h3>Estimated value today</h3><p class="empty">Not estimated - the only sale on record is a bulk/institutional sale of the whole building, not a comparable single-property transaction.</p></section>`;
   }
 
-  html += `<h3>Comparables nearby (${data.locality || 'n/a'})</h3>`;
+  html += `<section><h3>Comparables nearby (${data.locality || 'n/a'})</h3>`;
   if (data.comparables.length === 0) {
     html += '<p class="empty">No comparables found.</p>';
   } else {
@@ -138,6 +261,7 @@ function renderResult(data) {
     }
     html += '</table>';
   }
+  html += '</section>';
 
   resultEl.innerHTML = html;
 }
@@ -152,6 +276,7 @@ async function doSearch() {
   const resultEl = document.getElementById('result');
   if (!q) return;
   resultEl.innerHTML = '<p class="empty">Searching...</p>';
+  closeManualPanel();
 
   const res = await fetch('/api/search?q=' + encodeURIComponent(q));
   const data = await res.json();
@@ -166,6 +291,7 @@ function useMyLocation() {
     return;
   }
   resultEl.innerHTML = '<p class="empty">Getting your location...</p>';
+  closeManualPanel();
 
   navigator.geolocation.getCurrentPosition(async (pos) => {
     resultEl.innerHTML = '<p class="empty">Location found, looking up address...</p>';
@@ -183,7 +309,14 @@ document.getElementById('q').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') doSearch();
 });
 
-// --- camera + compass mode ---
+function toggleManualPanel() {
+  document.getElementById('manualPanel').classList.toggle('open');
+}
+function closeManualPanel() {
+  document.getElementById('manualPanel').classList.remove('open');
+}
+
+// --- camera + compass mode: the default view ---
 // This does NOT identify which building is in frame - there is no
 // building-footprint data to do that (see report section 12c/15). It
 // takes the phone's real GPS position and real compass heading and
@@ -195,7 +328,7 @@ document.getElementById('q').addEventListener('keydown', (e) => {
 // approximation, not a building lookup.
 let currentPosition = null;
 let currentHeading = null;
-let watchId = null;
+let headingGranted = false;
 
 function headingCompass(deg) {
   const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
@@ -209,8 +342,8 @@ function handleOrientation(event) {
     heading = event.webkitCompassHeading;
   } else if (event.absolute && typeof event.alpha === 'number') {
     // other browsers: alpha increases counter-clockwise from device's
-    // start orientation - this is a rough approximation, not calibrated
-    // against true north the way iOS's compass heading is
+    // start orientation - a rough approximation, not calibrated against
+    // true north the way iOS's compass heading is
     heading = (360 - event.alpha) % 360;
   }
   if (heading === null) return;
@@ -219,55 +352,71 @@ function handleOrientation(event) {
     `heading: ${heading.toFixed(0)}° ${headingCompass(heading)}`;
 }
 
-async function startCamera() {
+// Camera and GPS aren't gated behind a user gesture on iOS the way
+// DeviceOrientationEvent.requestPermission() is (confirmed live) - so
+// they can start immediately on page load, making the camera feel like
+// the app's default view rather than something you have to opt into.
+// Compass permission is requested here too in case the browser allows
+// it without a gesture (most non-iOS browsers do); if iOS silently
+// refuses, requestOrientationIfNeeded() retries from the first genuine
+// tap on "Look up this building".
+async function initCamera() {
   const note = document.getElementById('camNote');
   const wrap = document.getElementById('cameraWrap');
-  note.textContent = '';
-
-  // Request orientation permission FIRST, before anything else is
-  // awaited. Confirmed live: awaiting getUserMedia() before this call
-  // made iOS Safari reject it with "requires a user gesture to prompt",
-  // even though this whole function runs from a click handler - iOS
-  // only honours the gesture for the first permission prompt awaited,
-  // not for the function's lifetime.
-  if (typeof DeviceOrientationEvent !== 'undefined' &&
-      typeof DeviceOrientationEvent.requestPermission === 'function') {
-    try {
-      const result = await DeviceOrientationEvent.requestPermission();
-      if (result === 'granted') {
-        window.addEventListener('deviceorientation', handleOrientation, true);
-      } else {
-        note.textContent = 'Compass permission denied - camera will work, heading will not.';
-      }
-    } catch (err) {
-      note.textContent = `Compass permission request failed: ${err.message}`;
-    }
-  } else {
-    // non-iOS browsers don't gate this behind a permission prompt
-    window.addEventListener('deviceorientation', handleOrientation, true);
-  }
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: 'environment' }, audio: false,
     });
     document.getElementById('cameraVideo').srcObject = stream;
-    wrap.classList.add('active');
   } catch (err) {
-    note.textContent += ` Could not access camera: ${err.message}`;
-    return;
+    wrap.classList.add('no-camera');
+    note.textContent = 'Camera unavailable - use "Enter address instead" below.';
+  }
+
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const result = await DeviceOrientationEvent.requestPermission();
+      if (result === 'granted') {
+        headingGranted = true;
+        window.addEventListener('deviceorientation', handleOrientation, true);
+      }
+    } catch (err) {
+      // expected on iOS without a user gesture yet - retried on first tap
+    }
+  } else if (typeof DeviceOrientationEvent !== 'undefined') {
+    headingGranted = true;
+    window.addEventListener('deviceorientation', handleOrientation, true);
   }
 
   if (navigator.geolocation) {
-    watchId = navigator.geolocation.watchPosition(
+    navigator.geolocation.watchPosition(
       (pos) => { currentPosition = pos.coords; },
-      (err) => { note.textContent += ` Location error: ${err.message}`; },
+      (err) => { note.textContent = `Location error: ${err.message}`; },
       { enableHighAccuracy: true }
     );
   }
 }
 
+async function requestOrientationIfNeeded() {
+  if (headingGranted) return;
+  if (typeof DeviceOrientationEvent === 'undefined' ||
+      typeof DeviceOrientationEvent.requestPermission !== 'function') return;
+  try {
+    const result = await DeviceOrientationEvent.requestPermission();
+    if (result === 'granted') {
+      headingGranted = true;
+      window.addEventListener('deviceorientation', handleOrientation, true);
+    }
+  } catch (err) {
+    // still nothing to do from here without another tap
+  }
+}
+
 async function lookupFacing() {
+  await requestOrientationIfNeeded();
+
   const resultEl = document.getElementById('result');
   if (!currentPosition) {
     resultEl.innerHTML = '<p class="error">No GPS position yet - wait a moment and try again.</p>';
@@ -284,6 +433,8 @@ async function lookupFacing() {
   if (!res.ok) { renderError(data); return; }
   renderResult(data);
 }
+
+initCamera();
 </script>
 </body>
 </html>
