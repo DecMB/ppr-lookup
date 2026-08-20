@@ -161,7 +161,31 @@
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
   }
+
+  #mapView { height: 220px; border-radius: 8px; overflow: hidden; }
+  #daftLink {
+    display: inline-block; margin-top: 8px; padding: 8px 14px; font-size: 13px;
+    font-weight: 600; border-radius: 999px; text-decoration: none;
+    border: 1px solid var(--border); color: var(--ink);
+  }
+  #daftLink:hover { border-color: var(--accent); }
+
+  /* Leaflet's default control chrome is styled for a light basemap -
+     override to match the app's own surface/border/ink tokens rather
+     than leaving stark white squares against a dark page */
+  #mapView .leaflet-control-zoom a {
+    background: var(--surface); color: var(--ink); border-color: var(--border) !important;
+  }
+  #mapView .leaflet-control-attribution {
+    background: rgba(255,255,255,0.75); font-size: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    #mapView .leaflet-control-attribution { background: rgba(26,26,26,0.75); color: var(--muted); }
+    #mapView .leaflet-control-attribution a { color: var(--muted); }
+  }
 </style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 
@@ -225,6 +249,18 @@ function renderResult(data) {
 
   html += `<p><strong>Resolved:</strong> ${data.resolved_canonical} ${confBadge}<br>`;
   html += `<span class="score">match score ${data.match_score.toFixed(0)}/100, county: ${data.county_detected || 'not detected'}</span></p>`;
+
+  if (data.daft_search_url) {
+    html += `<a id="daftLink" href="${data.daft_search_url}" target="_blank" rel="noopener">Check Daft.ie for this address &rarr;</a>`;
+    html += `<p class="note" style="margin-top:4px;">Opens a web search scoped to daft.ie - not a confirmed listing match, `
+      + `Daft has no free address-search API to check this directly.</p>`;
+  }
+
+  if (data.lat != null && data.lon != null) {
+    html += `<section><h3>Map</h3><div id="mapView"></div>`
+      + `<p class="note">Satellite imagery centred on the resolved location, approximate - `
+      + `see the note on projection accuracy elsewhere in this report.</p></section>`;
+  }
 
   const bulkBadge = ' <span class="badge bulk">institutional/bulk sale - whole building, not a single unit</span>';
   const rowLabel = (r) => r.address + (r.is_bulk_sale ? bulkBadge : '')
@@ -351,6 +387,21 @@ function renderResult(data) {
   html += '</section>';
 
   resultEl.innerHTML = html;
+
+  if (data.lat != null && data.lon != null) {
+    renderMap(data.lat, data.lon);
+  }
+}
+
+let currentMap = null;
+function renderMap(lat, lon) {
+  if (currentMap) { currentMap.remove(); currentMap = null; }
+  currentMap = L.map('mapView', { attributionControl: true }).setView([lat, lon], 18);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: 'Esri, Maxar, Earthstar Geographics',
+  }).addTo(currentMap);
+  L.marker([lat, lon]).addTo(currentMap);
 }
 
 function renderError(data) {

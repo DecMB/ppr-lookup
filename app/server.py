@@ -811,15 +811,51 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
 
     # GPS-based callers already know where the device is pointing and pass
     # lat/lon straight through. Typed searches don't - forward-geocode the
-    # *resolved* address (not the raw query) so the geometry-based lookups
-    # (zoning, planning, flood, transit) work from typed search too.
+    # *resolved* address so the geometry-based lookups (zoning, planning,
+    # flood, transit, map) work from typed search too.
+    #
+    # Built as "house_no street, locality, Ireland" rather than the full
+    # canonical string - found live that Nominatim's free-text search
+    # reliably fails once a sub-locality sits between the house/street and
+    # the postal district ("75 Brighton Road, Rathgar, Dublin 6" -> no
+    # results) but succeeds with it dropped ("75 Brighton Road, Dublin 6"
+    # -> real match). The sub-locality is exactly what search_address()
+    # needs for its own matching, so it can't just be left out of
+    # `canonical` - it has to be stripped only for this geocoding query.
     if lat is None or lon is None:
         try:
-            lat, lon = forward_geocode(f"{match['canonical']}, {county}" if county else match["canonical"])
+            conn = get_db()
+            geo_row = conn.execute(
+                """
+                SELECT r.address, n.house_no, n.locality
+                FROM ppr_normalised n JOIN ppr_raw r ON r.id = n.ppr_id
+                WHERE n.county = ? AND n.canonical = ? LIMIT 1
+                """,
+                (county, match["canonical"]),
+            ).fetchone()
+            conn.close()
+
+            geocode_query = f"{match['canonical']}, {county}" if county else match["canonical"]
+            if geo_row and geo_row["house_no"] and geo_row["locality"]:
+                street = extract_street_name(geo_row["address"], county)
+                if street:
+                    geocode_query = f"{geo_row['house_no']} {street}, {geo_row['locality']}, Ireland"
+
+            lat, lon = forward_geocode(geocode_query)
         except Exception:
             lat, lon = None, None
 
     report = property_report(match["canonical"], county, lat=lat, lon=lon)
+
+    # Daft has no free-text address search URL and no open API (the real
+    # one is key-gated, per-account) - this is a Google search scoped to
+    # their domain, not a confirmed listing match. One click to check,
+    # not a claim that the property is actually listed.
+    display_address = report["history"][-1]["address"] if report["history"] else match["canonical"]
+    daft_search_url = "https://www.google.com/search?q=" + urllib.parse.quote(
+        f'"{display_address}" site:daft.ie'
+    )
+
     return {
         "query": q,
         "source": source_label,
@@ -836,6 +872,9 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "comparable_street": report["comparable_street"],
         "geo_context": report["geo_context"],
         "rent": report["rent"],
+        "lat": lat,
+        "lon": lon,
+        "daft_search_url": daft_search_url,
     }, 200
 
 
