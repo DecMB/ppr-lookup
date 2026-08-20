@@ -401,7 +401,7 @@ def flood_risk_lookup(lat, lon):
     try:
         for layer_id, label in FLOOD_LAYERS:
             data = _arcgis_query(
-                ARCGIS_FLOOD_URL.format(layer=layer_id), lat, lon, out_fields="OBJECTID",
+                ARCGIS_FLOOD_URL.format(layer=layer_id), lat, lon, out_fields="FID",
             )
             if data.get("features"):
                 return {
