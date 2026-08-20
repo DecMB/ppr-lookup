@@ -1,0 +1,19 @@
+# raw source dumps - large, reproducible from scripts/01_ingest.py
+data/raw/
+
+# the full local dev database (432MB, includes BER tables not used by
+# the deployed app) - only deploy.db ships, as a GitHub Release asset,
+# not committed to git at all (163MB, over GitHub's 100MB no-LFS limit)
+data/processed/spike.db
+data/processed/deploy.db
+data/processed/*.db-shm
+data/processed/*.db-wal
+data/processed/ber_full_header.txt
+
+# self-signed cert for local HTTPS testing - never meant to leave this
+# machine, and Render provides its own real cert in production
+certs/
+
+__pycache__/
+*.pyc
+.DS_Store

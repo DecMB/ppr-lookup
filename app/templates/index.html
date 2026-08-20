@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PPR address lookup - spike demo</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; background: #fff; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e8e8e8; background: #121212; }
+    .note { color: #aaa; }
+    input[type=text] { background: #1e1e1e; color: #e8e8e8; border-color: #444; }
+    td, th { border-bottom-color: #333; }
+    .score { color: #999; }
+  }
+  h1 { font-size: 20px; }
+  .note { color: #666; font-size: 13px; margin-bottom: 24px; }
+  input[type=text] { width: 100%; padding: 10px; font-size: 15px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
+  button { margin-top: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  #result { margin-top: 24px; }
+  .price { font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+  .score { color: #888; font-size: 12px; }
+  .empty { color: #888; font-style: italic; }
+  .error { color: #b00020; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge.confirmed { background: #d4edda; color: #155724; }
+  .badge.unconfirmed { background: #fff3cd; color: #856404; }
+  .badge.bulk { background: #dbe4ff; color: #2a3f8f; }
+  @media (prefers-color-scheme: dark) {
+    .error { color: #ff6b6b; }
+    .badge.confirmed { background: #17351f; color: #6fd18a; }
+    .badge.unconfirmed { background: #3a2f0a; color: #e0c257; }
+    .badge.bulk { background: #1c2547; color: #9fb2ff; }
+  }
+  #cameraWrap { position: relative; margin-top: 8px; display: none; border-radius: 8px; overflow: hidden; background: #000; }
+  #cameraWrap.active { display: block; }
+  #cameraVideo { width: 100%; display: block; max-height: 55vh; object-fit: cover; }
+  #headingOverlay {
+    position: absolute; top: 10px; left: 10px; padding: 4px 10px;
+    background: rgba(0,0,0,0.55); color: #fff; font-size: 13px;
+    border-radius: 6px; font-variant-numeric: tabular-nums;
+  }
+  #crosshair {
+    position: absolute; top: 50%; left: 50%; width: 28px; height: 28px;
+    transform: translate(-50%, -50%); border: 2px solid rgba(255,255,255,0.85);
+    border-radius: 50%; pointer-events: none;
+  }
+  #lookupBtn {
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    padding: 10px 20px; border-radius: 20px; border: none; background: #fff;
+    font-weight: 600; cursor: pointer;
+  }
+  .cam-note { font-size: 12px; color: #888; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <h1>PPR address lookup</h1>
+  <p class="note">
+    Type an address, or use your device's real location - both are stand-ins
+    for the camera-scan step, which needs a building-footprint dataset this
+    spike hasn't sourced. Price history only; no BER data (still blocked
+    pending SEAI/CSO).
+  </p>
+  <input type="text" id="q" placeholder="e.g. 5 Braemor Drive, Churchtown, Dublin" autofocus>
+  <button onclick="doSearch()">Search</button>
+  <button onclick="useMyLocation()" id="locBtn">Use my location</button>
+  <button onclick="startCamera()" id="camBtn">Point camera</button>
+
+  <div id="cameraWrap">
+    <video id="cameraVideo" autoplay playsinline muted></video>
+    <div id="headingOverlay">heading: waiting...</div>
+    <div id="crosshair"></div>
+    <button id="lookupBtn" onclick="lookupFacing()">Look up this building</button>
+  </div>
+  <p class="cam-note" id="camNote"></p>
+
+  <div id="result"></div>
+
+<script>
+function renderResult(data) {
+  const resultEl = document.getElementById('result');
+
+  let html = '';
+  if (data.reverse_geocoded_address) {
+    html += `<p class="note">GPS resolved to: ${data.reverse_geocoded_address}</p>`;
+  }
+  if (data.heading_deg !== null && data.heading_deg !== undefined) {
+    html += `<p class="note">Compass heading: ${data.heading_deg.toFixed(0)}&deg; - projected ~20m ahead before geocoding, not just standing position.</p>`;
+  }
+
+  const confBadge = data.house_confirmed
+    ? '<span class="badge confirmed">house number confirmed</span>'
+    : '<span class="badge unconfirmed">street-level match only - house number not confirmed</span>';
+
+  html += `<p><strong>Resolved:</strong> ${data.resolved_canonical} ${confBadge}<br>`;
+  html += `<span class="score">match score ${data.match_score.toFixed(0)}/100, county: ${data.county_detected || 'not detected'}</span></p>`;
+
+  const bulkBadge = ' <span class="badge bulk">institutional/bulk sale - whole building, not a single unit</span>';
+  const rowLabel = (r) => r.address + (r.is_bulk_sale ? bulkBadge : '')
+    + (r.size_description ? `<br><span class="note">size band: ${r.size_description}</span>` : '');
+
+  html += `<h3>Sale history (${data.n_sales})</h3>`;
+  if (data.sale_history.length === 0) {
+    html += '<p class="empty">No sales found for this exact address.</p>';
+  } else {
+    html += '<table><tr><th>Date</th><th>Price</th><th>Raw address</th></tr>';
+    for (const h of data.sale_history) {
+      html += `<tr><td>${h.date_of_sale}</td><td class="price">&euro;${h.price_eur.toLocaleString()}</td><td>${rowLabel(h)}</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  if (data.valuation) {
+    const v = data.valuation;
+    const sign = v.county_price_change_pct >= 0 ? '+' : '';
+    html += `<h3>Estimated value today</h3>`;
+    html += `<p><span class="price">&euro;${v.estimated_value.toLocaleString(undefined, {maximumFractionDigits: 0})}</span> `;
+    html += `<span class="badge unconfirmed">estimate, not a valuation</span></p>`;
+    html += `<p class="note">Based on the last known sale (${v.based_on_sale_year}), scaled by the county median price `
+      + `change since then (${sign}${v.county_price_change_pct}% to ${v.index_latest_year}). `
+      + `Index sample sizes: ${v.based_on_sale_year} n=${v.index_sample_sizes[v.based_on_sale_year]}, `
+      + `${v.index_latest_year} n=${v.index_sample_sizes[v.index_latest_year]}`
+      + `${v.index_latest_year === '2026' ? ' (2026 is a partial year)' : ''}. `
+      + `County-wide trend applied to one property - not a substitute for an actual appraisal, `
+      + `and takes no account of this property's own condition, renovations, or features.</p>`;
+  } else if (data.sale_history.length && data.sale_history[data.sale_history.length - 1].is_bulk_sale) {
+    html += `<h3>Estimated value today</h3><p class="empty">Not estimated - the only sale on record is a bulk/institutional sale of the whole building, not a comparable single-property transaction.</p>`;
+  }
+
+  html += `<h3>Comparables nearby (${data.locality || 'n/a'})</h3>`;
+  if (data.comparables.length === 0) {
+    html += '<p class="empty">No comparables found.</p>';
+  } else {
+    html += '<table><tr><th>Date</th><th>Price</th><th>Raw address</th></tr>';
+    for (const c of data.comparables) {
+      html += `<tr><td>${c.date_of_sale}</td><td class="price">&euro;${c.price_eur.toLocaleString()}</td><td>${rowLabel(c)}</td></tr>`;
+    }
+    html += '</table>';
+  }
+
+  resultEl.innerHTML = html;
+}
+
+function renderError(data) {
+  document.getElementById('result').innerHTML =
+    `<p class="error">${data.error}${data.county_detected ? ' (county detected: ' + data.county_detected + ')' : ''}</p>`;
+}
+
+async function doSearch() {
+  const q = document.getElementById('q').value.trim();
+  const resultEl = document.getElementById('result');
+  if (!q) return;
+  resultEl.innerHTML = '<p class="empty">Searching...</p>';
+
+  const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+  const data = await res.json();
+  if (!res.ok) { renderError(data); return; }
+  renderResult(data);
+}
+
+function useMyLocation() {
+  const resultEl = document.getElementById('result');
+  if (!navigator.geolocation) {
+    resultEl.innerHTML = '<p class="error">This browser does not support geolocation.</p>';
+    return;
+  }
+  resultEl.innerHTML = '<p class="empty">Getting your location...</p>';
+
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    resultEl.innerHTML = '<p class="empty">Location found, looking up address...</p>';
+    const { latitude, longitude } = pos.coords;
+    const res = await fetch(`/api/nearby?lat=${latitude}&lon=${longitude}`);
+    const data = await res.json();
+    if (!res.ok) { renderError(data); return; }
+    renderResult(data);
+  }, (err) => {
+    resultEl.innerHTML = `<p class="error">Could not get your location: ${err.message}</p>`;
+  }, { enableHighAccuracy: true, timeout: 10000 });
+}
+
+document.getElementById('q').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doSearch();
+});
+
+// --- camera + compass mode ---
+// This does NOT identify which building is in frame - there is no
+// building-footprint data to do that (see report section 12c/15). It
+// takes the phone's real GPS position and real compass heading and
+// projects a point ~20m ahead along that bearing, then runs the same
+// address matcher against the projected point. Confirmed live to route
+// around at least one real geocoding failure (a GPS point that landed
+// on a neighbouring hospital campus resolved correctly once a
+// roughly-right heading was supplied) - but it is still an
+// approximation, not a building lookup.
+let currentPosition = null;
+let currentHeading = null;
+let watchId = null;
+
+function headingCompass(deg) {
+  const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  return dirs[Math.round(deg / 22.5) % 16];
+}
+
+function handleOrientation(event) {
+  let heading = null;
+  if (typeof event.webkitCompassHeading === 'number') {
+    // iOS Safari: already true-north-referenced, no inversion needed
+    heading = event.webkitCompassHeading;
+  } else if (event.absolute && typeof event.alpha === 'number') {
+    // other browsers: alpha increases counter-clockwise from device's
+    // start orientation - this is a rough approximation, not calibrated
+    // against true north the way iOS's compass heading is
+    heading = (360 - event.alpha) % 360;
+  }
+  if (heading === null) return;
+  currentHeading = heading;
+  document.getElementById('headingOverlay').textContent =
+    `heading: ${heading.toFixed(0)}° ${headingCompass(heading)}`;
+}
+
+async function startCamera() {
+  const note = document.getElementById('camNote');
+  const wrap = document.getElementById('cameraWrap');
+  note.textContent = '';
+
+  // Request orientation permission FIRST, before anything else is
+  // awaited. Confirmed live: awaiting getUserMedia() before this call
+  // made iOS Safari reject it with "requires a user gesture to prompt",
+  // even though this whole function runs from a click handler - iOS
+  // only honours the gesture for the first permission prompt awaited,
+  // not for the function's lifetime.
+  if (typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const result = await DeviceOrientationEvent.requestPermission();
+      if (result === 'granted') {
+        window.addEventListener('deviceorientation', handleOrientation, true);
+      } else {
+        note.textContent = 'Compass permission denied - camera will work, heading will not.';
+      }
+    } catch (err) {
+      note.textContent = `Compass permission request failed: ${err.message}`;
+    }
+  } else {
+    // non-iOS browsers don't gate this behind a permission prompt
+    window.addEventListener('deviceorientation', handleOrientation, true);
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' }, audio: false,
+    });
+    document.getElementById('cameraVideo').srcObject = stream;
+    wrap.classList.add('active');
+  } catch (err) {
+    note.textContent += ` Could not access camera: ${err.message}`;
+    return;
+  }
+
+  if (navigator.geolocation) {
+    watchId = navigator.geolocation.watchPosition(
+      (pos) => { currentPosition = pos.coords; },
+      (err) => { note.textContent += ` Location error: ${err.message}`; },
+      { enableHighAccuracy: true }
+    );
+  }
+}
+
+async function lookupFacing() {
+  const resultEl = document.getElementById('result');
+  if (!currentPosition) {
+    resultEl.innerHTML = '<p class="error">No GPS position yet - wait a moment and try again.</p>';
+    return;
+  }
+  resultEl.innerHTML = '<p class="empty">Looking up what\'s ahead...</p>';
+
+  const { latitude, longitude } = currentPosition;
+  let url = `/api/nearby?lat=${latitude}&lon=${longitude}`;
+  if (currentHeading !== null) url += `&heading=${currentHeading}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) { renderError(data); return; }
+  renderResult(data);
+}
+</script>
+</body>
+</html>

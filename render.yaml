@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ppr-lookup
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt && bash scripts/fetch_deploy_db.sh"
+    startCommand: "gunicorn --chdir app --bind 0.0.0.0:$PORT --timeout 120 server:app"
+    envVars:
+      - key: RENDER
+        value: "true"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: DB_DOWNLOAD_URL
+        sync: false

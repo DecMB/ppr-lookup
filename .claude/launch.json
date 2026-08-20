@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ppr-lookup",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["app/server.py"],
+      "port": 5057
+    }
+  ]
+}
