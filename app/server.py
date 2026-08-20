@@ -523,13 +523,6 @@ def rent_lookup(county, locality):
     return None
 
 
-def compute_rental_yield(valuation, rent):
-    if not valuation or not rent or not rent.get("avg_monthly_rent"):
-        return None
-    annual_rent = rent["avg_monthly_rent"] * 12
-    return round((annual_rent / valuation["estimated_value"]) * 100, 2)
-
-
 def detect_county(query_text):
     lowered = query_text.lower()
     for c in COUNTIES:
@@ -731,7 +724,6 @@ def property_report(canonical, county, lat=None, lon=None):
 
     geo = geo_context(lat, lon)
     rent = rent_lookup(county, locality) if county else None
-    rental_yield_pct = compute_rental_yield(valuation, rent)
 
     return {
         "history": tagged_history,
@@ -741,7 +733,6 @@ def property_report(canonical, county, lat=None, lon=None):
         "comparables": tagged_comparables,
         "geo_context": geo,
         "rent": rent,
-        "rental_yield_pct": rental_yield_pct,
     }
 
 
@@ -789,7 +780,6 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "comparables": report["comparables"],
         "geo_context": report["geo_context"],
         "rent": report["rent"],
-        "rental_yield_pct": report["rental_yield_pct"],
     }, 200
 
 
