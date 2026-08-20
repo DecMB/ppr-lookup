@@ -91,7 +91,9 @@ def login():
             return redirect(request.args.get("next") or url_for("index"))
         error = "Wrong password."
     return f"""
-    <!doctype html><html><body style="font-family:-apple-system,sans-serif;max-width:320px;margin:80px auto">
+    <!doctype html><html><head><title>Kerbsight</title></head>
+    <body style="font-family:-apple-system,sans-serif;max-width:320px;margin:80px auto">
+    <h1 style="font-size:20px;margin:0 0 16px;">Kerbsight</h1>
     <form method="post">
       <p>{error or ''}</p>
       <input type="password" name="password" placeholder="Password" autofocus
@@ -564,6 +566,30 @@ def street_portion(canonical, house_no, locality):
     return s
 
 
+def extract_street_name(raw_address, county):
+    """
+    First comma-separated segment after the house number, e.g. "brighton
+    rd" from "75 Brighton Rd, Rathgar, Dublin 6". Used to scope
+    comparables to the actual street rather than the `locality` field,
+    which can span a whole postal district (Dublin 6 alone covers dozens
+    of streets) and - since it's just whichever comma segment happens to
+    land last - isn't even consistently the same segment across two
+    sales on the same street if their raw addresses have a different
+    number of comma-separated parts.
+    """
+    working = normaliser.lower_and_tidy(raw_address)
+    working = normaliser.strip_county_suffix(working, county)
+    _, remainder = normaliser.extract_house_no(working)
+    remainder = normaliser.expand_abbreviations(remainder)
+    remainder = re.sub(r'\s+', ' ', remainder).strip(' ,')
+    tokens = [t.strip() for t in remainder.split(',') if t.strip()]
+    if not tokens:
+        return None
+    street = normaliser.fold(tokens[0])
+    street = re.sub(r'[^a-z0-9 ]', '', street).strip()
+    return street or None
+
+
 def search_address(query_text, top_n=5):
     """
     Two stages, not one flat fuzzy match on the whole address string.
@@ -680,18 +706,59 @@ def property_report(canonical, county, lat=None, lon=None):
     ).fetchone()
     locality = locality_row["locality"] if locality_row else None
 
+    # comparables are scoped to the same street, not the same `locality`
+    # field - a Dublin postal district like "Dublin 6" covers dozens of
+    # streets, so locality alone let entirely unrelated streets show up
+    # as "nearby". Street name comes from the raw address (comma
+    # structure is lost once it's folded into `canonical`), matched via
+    # LIKE against canonical, which already has abbreviations normalised
+    # the same way (road -> rd etc) so "Brighton Road" and "Brighton Rd"
+    # agree.
+    # locality is still required alongside the street-name match, not
+    # dropped in favour of it - Ireland has plenty of same-named streets
+    # in different areas of the same county (there's a "Brighton Road"
+    # in both Rathgar and Foxrock, both Dublin), and a bare county-wide
+    # LIKE match found this the hard way, pulling in a Foxrock apartment
+    # block as a "comparable" for a Rathgar house
+    street_name = extract_street_name(history[0]["address"], county) if history else None
     comparables = []
-    if locality:
+    if street_name and locality:
+        # matched against the START of each candidate's own remainder
+        # (house number, then street name), not just anywhere in its
+        # canonical string - a plain "contains" match let properties on a
+        # different street that merely mention this one in passing (e.g.
+        # "49 Merton Dr, Sandford Rd, Dublin 6") show up as comparables
         comparables = conn.execute(
             f"""
             SELECT r.date_of_sale, r.price_eur, r.address
             FROM ppr_normalised n JOIN ppr_raw r ON r.id = n.ppr_id
             WHERE n.county = ? AND n.locality = ? AND n.canonical <> ?
+              AND n.canonical LIKE (n.house_no || ' ' || ? || '%')
             ORDER BY {DATE_SORT_SQL} DESC
             LIMIT 10
             """,
-            (county, locality, canonical),
+            (county, locality, canonical, street_name),
         ).fetchall()
+
+    # locality-level median/sample size - now a dedicated query rather
+    # than reusing the comparables list, since comparables are street-
+    # scoped and would otherwise understate the locality's real sample
+    locality_stats = None
+    if locality:
+        locality_rows = conn.execute(
+            """
+            SELECT r.price_eur, r.address
+            FROM ppr_normalised n JOIN ppr_raw r ON r.id = n.ppr_id
+            WHERE n.county = ? AND n.locality = ?
+            """,
+            (county, locality),
+        ).fetchall()
+        locality_prices = [r["price_eur"] for r in locality_rows if not is_bulk_sale(r["address"])]
+        if locality_prices:
+            locality_stats = {
+                "median_price": statistics.median(locality_prices),
+                "n_sales": len(locality_prices),
+            }
 
     conn.close()
 
@@ -709,19 +776,6 @@ def property_report(canonical, county, lat=None, lon=None):
             sale_year = latest_sale["date_of_sale"][-4:]
             valuation = estimate_current_value(county, latest_sale["price_eur"], sale_year)
 
-    # locality-level median/sample size, built from the same sales already
-    # fetched for comparables (no extra query) - a finer-grained read than
-    # the county-level PRICE_INDEX, at the cost of a much smaller sample
-    locality_prices = [
-        r["price_eur"] for r in tagged_history + tagged_comparables if not r["is_bulk_sale"]
-    ]
-    locality_stats = None
-    if locality_prices:
-        locality_stats = {
-            "median_price": statistics.median(locality_prices),
-            "n_sales": len(locality_prices),
-        }
-
     geo = geo_context(lat, lon)
     rent = rent_lookup(county, locality) if county else None
 
@@ -731,6 +785,7 @@ def property_report(canonical, county, lat=None, lon=None):
         "locality": locality,
         "locality_stats": locality_stats,
         "comparables": tagged_comparables,
+        "comparable_street": street_name,
         "geo_context": geo,
         "rent": rent,
     }
@@ -778,6 +833,7 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "locality": report["locality"],
         "locality_stats": report["locality_stats"],
         "comparables": report["comparables"],
+        "comparable_street": report["comparable_street"],
         "geo_context": report["geo_context"],
         "rent": report["rent"],
     }, 200
