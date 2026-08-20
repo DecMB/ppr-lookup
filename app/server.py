@@ -4,6 +4,7 @@ get back the resolved property's sale history plus nearby comparables,
 built entirely from PPR. No BER data involved - that piece is still
 blocked pending the SEAI/CSO requests.
 """
+import datetime
 import json
 import math
 import os
@@ -173,11 +174,28 @@ def estimate_current_value(county, last_price, last_sale_year):
     latest = county_index[latest_year]
 
     ratio = latest["median"] / base["median"]
+
+    # annualized (CAGR) rather than the raw total-change percentage above -
+    # undefined for a same-year sale (0 years held), so left as None rather
+    # than a divide-by-zero or a misleading "0% annualized"
+    years_held = int(latest_year) - int(last_sale_year)
+    annualized_change_pct = (
+        round(((ratio ** (1 / years_held)) - 1) * 100, 2) if years_held > 0 else None
+    )
+
+    trend_years = sorted(county_index.keys())[-10:]
+    price_trend = [
+        {"year": y, "median": county_index[y]["median"], "n": county_index[y]["n"]}
+        for y in trend_years
+    ]
+
     return {
         "estimated_value": round(last_price * ratio, 2),
         "based_on_sale_year": last_sale_year,
         "index_latest_year": latest_year,
         "county_price_change_pct": round((ratio - 1) * 100, 1),
+        "annualized_change_pct": annualized_change_pct,
+        "price_trend": price_trend,
         "index_sample_sizes": {last_sale_year: base["n"], latest_year: latest["n"]},
     }
 
@@ -247,6 +265,269 @@ def reverse_geocode(lat, lon):
         "county": county,
         "raw_display_name": data.get("display_name"),
     }
+
+
+def forward_geocode(query_text):
+    """
+    The inverse of reverse_geocode: turns a resolved PPR address into a GPS
+    coordinate via Nominatim, so a typed search can also drive the
+    geometry-based lookups below (zoning, planning applications, flood
+    risk, transit) - lookups a GPS-based search gets for free from the
+    device's own position. Same single on-demand usage policy as
+    reverse_geocode: one call per typed search that resolves to a
+    confident match, never batched or looped.
+    """
+    url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode({
+        "q": f"{query_text}, Ireland", "format": "json", "limit": 1,
+    })
+    req = urllib.request.Request(url, headers={"User-Agent": NOMINATIM_UA})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        results = json.loads(resp.read().decode("utf-8"))
+    if not results:
+        return None, None
+    return float(results[0]["lat"]), float(results[0]["lon"])
+
+
+def _arcgis_query(url, lat, lon, out_fields, distance_m=None, extra_params=None, timeout=6):
+    params = {
+        "geometry": f"{lon},{lat}",
+        "geometryType": "esriGeometryPoint",
+        "inSR": 4326,
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": out_fields,
+        "f": "json",
+    }
+    if distance_m:
+        params["distance"] = distance_m
+        params["units"] = "esriSRUnit_Meter"
+    if extra_params:
+        params.update(extra_params)
+    full_url = url + "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(full_url, headers={"User-Agent": NOMINATIM_UA})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+# All four confirmed live against real coordinates before being wired in -
+# same "verify before building" standard as PPR/BER: point queries at a
+# known Dublin address (75 Orwell Road / Marianella) each returned real,
+# checkable data, not placeholders.
+ARCGIS_ZONING_URL = "https://services.arcgis.com/NzlPQPKn5QF9v2US/ArcGIS/rest/services/GZT_Current_Plan/FeatureServer/0/query"
+ARCGIS_PLANNING_URL = "https://services.arcgis.com/NzlPQPKn5QF9v2US/arcgis/rest/services/IrishPlanningApplications/FeatureServer/0/query"
+ARCGIS_FLOOD_URL = "https://services6.arcgis.com/MmUrOQU5v1he9gfS/arcgis/rest/services/NIFM_River_Flood_Extents_OPW_Ireland_2020/FeatureServer/{layer}/query"
+ARCGIS_PTAL_URL = "https://services-eu1.arcgis.com/p0UmGrpumWZYhF0p/ArcGIS/rest/services/PTAL_8am_to_9am/FeatureServer/1/query"
+
+
+def _epoch_ms_to_date(ms):
+    if not ms:
+        return None
+    return datetime.date.fromtimestamp(ms / 1000).isoformat()
+
+
+def zoning_lookup(lat, lon):
+    """
+    Point-in-polygon against DHLGH's Generalised Zoning Types layer - a
+    standardised composite of local authority development-plan zoning
+    (source: MyPlan.ie / data.gov.ie). Returns None on any failure or if
+    the point falls outside mapped/zoned land (e.g. some rural areas) -
+    an absent zone is a real possible outcome, not an error to hide.
+    """
+    try:
+        data = _arcgis_query(
+            ARCGIS_ZONING_URL, lat, lon,
+            out_fields="ZONE_GZT,GZT_DESC,ZONE_DESC,ZONE_ORIG,LA_NAME,PLAN_NAME,PLAN_LEVEL",
+        )
+        feats = data.get("features", [])
+        if not feats:
+            return None
+        a = feats[0]["attributes"]
+        return {
+            "zone_code": a.get("ZONE_GZT"),
+            "zone_category": a.get("GZT_DESC"),
+            "zone_description": a.get("ZONE_DESC") or a.get("ZONE_ORIG"),
+            "local_authority": a.get("LA_NAME"),
+            "plan_name": a.get("PLAN_NAME"),
+            "source": "DHLGH Generalised Development Zoning",
+        }
+    except Exception:
+        return None
+
+
+def planning_applications_lookup(lat, lon, radius_m=300, limit=5):
+    """
+    Nearby planning applications within radius_m, most recent first.
+    Source: local authority planning application data aggregated on
+    ArcGIS (the same feed that, tested live, correctly surfaced the
+    user's own building's actual planning history).
+    """
+    try:
+        data = _arcgis_query(
+            ARCGIS_PLANNING_URL, lat, lon,
+            out_fields="DevelopmentDescription,DevelopmentAddress,ApplicationStatus,"
+                        "Decision,ReceivedDate,DecisionDate,NumResidentialUnits",
+            distance_m=radius_m,
+            extra_params={"orderByFields": "ReceivedDate DESC", "resultRecordCount": limit},
+        )
+        out = []
+        for f in data.get("features", []):
+            a = f["attributes"]
+            out.append({
+                "description": a.get("DevelopmentDescription"),
+                "address": a.get("DevelopmentAddress"),
+                "status": a.get("ApplicationStatus"),
+                "decision": a.get("Decision"),
+                "received_date": _epoch_ms_to_date(a.get("ReceivedDate")),
+                "decision_date": _epoch_ms_to_date(a.get("DecisionDate")),
+                "residential_units": a.get("NumResidentialUnits"),
+            })
+        return out
+    except Exception:
+        return []
+
+
+# river flood extent layers on the OPW's National Indicative Fluvial
+# Mapping service, checked worst-case-first: if a point falls inside the
+# more frequent 100-year extent it's also inside the 1000-year one, so
+# stop at the first hit rather than querying all nine layers
+FLOOD_LAYERS = [
+    (3, "100-year river flood extent (current climate, ~1% annual chance)"),
+    (4, "1000-year river flood extent (current climate, ~0.1% annual chance)"),
+]
+
+
+def flood_risk_lookup(lat, lon):
+    try:
+        for layer_id, label in FLOOD_LAYERS:
+            data = _arcgis_query(
+                ARCGIS_FLOOD_URL.format(layer=layer_id), lat, lon, out_fields="OBJECTID",
+            )
+            if data.get("features"):
+                return {
+                    "in_mapped_flood_extent": True,
+                    "extent_matched": label,
+                    "source": "OPW National Indicative Fluvial Mapping (river flooding only - "
+                              "does not cover coastal or pluvial/surface-water flooding)",
+                }
+        return {
+            "in_mapped_flood_extent": False,
+            "extent_matched": None,
+            "source": "OPW National Indicative Fluvial Mapping (river flooding only - "
+                      "does not cover coastal or pluvial/surface-water flooding)",
+        }
+    except Exception:
+        return None
+
+
+def transit_lookup(lat, lon):
+    """
+    Public Transport Accessibility Level for the 8-9am peak, published by
+    the National Transport Authority - a composite score (walk time to
+    stops x service frequency), not a raw stop-distance count, so it
+    already accounts for how useful nearby transit actually is.
+    """
+    try:
+        data = _arcgis_query(ARCGIS_PTAL_URL, lat, lon, out_fields="PTAL_Score,Time_Period")
+        feats = data.get("features", [])
+        if not feats:
+            return None
+        a = feats[0]["attributes"]
+        return {
+            "ptal_score": a.get("PTAL_Score"),
+            "time_period": a.get("Time_Period"),
+            "source": "National Transport Authority PTAL",
+        }
+    except Exception:
+        return None
+
+
+def geo_context(lat, lon):
+    if lat is None or lon is None:
+        return None
+    return {
+        "zoning": zoning_lookup(lat, lon),
+        "planning_applications": planning_applications_lookup(lat, lon),
+        "flood_risk": flood_risk_lookup(lat, lon),
+        "transit": transit_lookup(lat, lon),
+    }
+
+
+# RTB Average Monthly Rent Report, published via CSO's public PxStat API -
+# no key required. Loaded once and cached for the process lifetime (a
+# ~2MB JSON-stat payload covering ~440 areas x 18 years x bedroom count x
+# property type); lookups after the first are pure in-memory indexing.
+RENT_DATASET_URL = "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/RIA02/JSON-stat/2.0/en"
+_RENT_DATASET = None
+
+
+def get_rent_dataset():
+    global _RENT_DATASET
+    if _RENT_DATASET is not None:
+        return _RENT_DATASET
+    try:
+        req = urllib.request.Request(RENT_DATASET_URL, headers={"User-Agent": NOMINATIM_UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            _RENT_DATASET = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    return _RENT_DATASET
+
+
+def rent_lookup(county, locality):
+    """
+    RTB average monthly rent (all bedrooms, all property types, most
+    recent year with data) for the property's locality. RIA02's ~440
+    areas are a mix of county-wide and named town/suburb entries, not a
+    guaranteed match for every PPR locality string - falls back to the
+    county-wide figure when no locality-specific area matches closely.
+    """
+    data = get_rent_dataset()
+    if not data:
+        return None
+
+    area_cat = data["dimension"]["C03004V03625"]["category"]
+    area_codes = area_cat["index"]
+    area_labels = area_cat["label"]
+    candidates = [(code, area_labels[code]) for code in area_codes]
+
+    target = None
+    if locality:
+        pool = [(c, l) for c, l in candidates if county and county.lower() in l.lower()] or candidates
+        match = process.extractOne(locality, [l for _, l in pool], scorer=fuzz.token_sort_ratio)
+        if match and match[1] >= 70:
+            target = next(c for c, l in pool if l == match[0])
+    if not target and county:
+        exact = [c for c, l in candidates if l.strip().lower() == county.strip().lower()]
+        if exact:
+            target = exact[0]
+    if not target:
+        return None
+
+    year_index = data["dimension"]["TLIST(A1)"]["category"]["index"]
+    bed_index = data["dimension"]["C02970V03592"]["category"]["index"]
+    prop_index = data["dimension"]["C02969V03591"]["category"]["index"]
+    size = data["size"]
+    area_pos = area_codes.index(target)
+    bed_pos = bed_index.index("-")
+    prop_pos = prop_index.index("-")
+
+    for year_pos in range(len(year_index) - 1, -1, -1):
+        flat = ((((0) * size[1] + year_pos) * size[2] + bed_pos) * size[3] + prop_pos) * size[4] + area_pos
+        value = data["value"][flat]
+        if value is not None:
+            return {
+                "area_matched": area_labels[target],
+                "year": year_index[year_pos],
+                "avg_monthly_rent": value,
+                "source": "RTB/CSO Rent Index (RIA02)",
+            }
+    return None
+
+
+def compute_rental_yield(valuation, rent):
+    if not valuation or not rent or not rent.get("avg_monthly_rent"):
+        return None
+    annual_rent = rent["avg_monthly_rent"] * 12
+    return round((annual_rent / valuation["estimated_value"]) * 100, 2)
 
 
 def detect_county(query_text):
@@ -388,7 +669,7 @@ def search_address(query_text, top_n=5):
 DATE_SORT_SQL = "substr(r.date_of_sale,7,4) || substr(r.date_of_sale,4,2) || substr(r.date_of_sale,1,2)"
 
 
-def property_report(canonical, county):
+def property_report(canonical, county, lat=None, lon=None):
     conn = get_db()
     history = conn.execute(
         f"""
@@ -427,6 +708,7 @@ def property_report(canonical, county):
         return d
 
     tagged_history = [tag(h) for h in history]
+    tagged_comparables = [tag(c) for c in comparables]
     valuation = None
     if tagged_history:
         latest_sale = tagged_history[-1]
@@ -434,11 +716,32 @@ def property_report(canonical, county):
             sale_year = latest_sale["date_of_sale"][-4:]
             valuation = estimate_current_value(county, latest_sale["price_eur"], sale_year)
 
+    # locality-level median/sample size, built from the same sales already
+    # fetched for comparables (no extra query) - a finer-grained read than
+    # the county-level PRICE_INDEX, at the cost of a much smaller sample
+    locality_prices = [
+        r["price_eur"] for r in tagged_history + tagged_comparables if not r["is_bulk_sale"]
+    ]
+    locality_stats = None
+    if locality_prices:
+        locality_stats = {
+            "median_price": statistics.median(locality_prices),
+            "n_sales": len(locality_prices),
+        }
+
+    geo = geo_context(lat, lon)
+    rent = rent_lookup(county, locality) if county else None
+    rental_yield_pct = compute_rental_yield(valuation, rent)
+
     return {
         "history": tagged_history,
         "valuation": valuation,
         "locality": locality,
-        "comparables": [tag(c) for c in comparables],
+        "locality_stats": locality_stats,
+        "comparables": tagged_comparables,
+        "geo_context": geo,
+        "rent": rent,
+        "rental_yield_pct": rental_yield_pct,
     }
 
 
@@ -447,7 +750,7 @@ def index():
     return render_template("index.html")
 
 
-def resolve_and_report(q, source_label):
+def resolve_and_report(q, source_label, lat=None, lon=None):
     match, county, raw_matches = search_address(q)
     if not match:
         return {"error": "no candidates found", "county_detected": county}, 404
@@ -460,7 +763,17 @@ def resolve_and_report(q, source_label):
             "closest_candidate": match["canonical"],
         }, 404
 
-    report = property_report(match["canonical"], county)
+    # GPS-based callers already know where the device is pointing and pass
+    # lat/lon straight through. Typed searches don't - forward-geocode the
+    # *resolved* address (not the raw query) so the geometry-based lookups
+    # (zoning, planning, flood, transit) work from typed search too.
+    if lat is None or lon is None:
+        try:
+            lat, lon = forward_geocode(f"{match['canonical']}, {county}" if county else match["canonical"])
+        except Exception:
+            lat, lon = None, None
+
+    report = property_report(match["canonical"], county, lat=lat, lon=lon)
     return {
         "query": q,
         "source": source_label,
@@ -472,7 +785,11 @@ def resolve_and_report(q, source_label):
         "n_sales": len(report["history"]),
         "valuation": report["valuation"],
         "locality": report["locality"],
+        "locality_stats": report["locality_stats"],
         "comparables": report["comparables"],
+        "geo_context": report["geo_context"],
+        "rent": report["rent"],
+        "rental_yield_pct": report["rental_yield_pct"],
     }, 200
 
 
@@ -536,7 +853,10 @@ def api_nearby():
         }), 404
 
     q = f"{geo['query_text']}, {geo['county']}" if geo["county"] else geo["query_text"]
-    body, status = resolve_and_report(q, source_label="gps+compass" if heading is not None else "gps")
+    body, status = resolve_and_report(
+        q, source_label="gps+compass" if heading is not None else "gps",
+        lat=projected_lat, lon=projected_lon,
+    )
     body["reverse_geocoded_address"] = geo["query_text"]
     body["raw_osm_display_name"] = geo["raw_display_name"]
     body["device_position"] = {"lat": lat, "lon": lon}

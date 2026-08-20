@@ -60,22 +60,30 @@
   .badge.confirmed { background: #d4edda; color: #155724; }
   .badge.unconfirmed { background: #fff3cd; color: #856404; }
   .badge.bulk { background: #dbe4ff; color: #2a3f8f; }
+  .badge.risk { background: #f8d7da; color: #721c24; }
+  .badge.info { background: #e2e3e5; color: #383d41; }
   @media (prefers-color-scheme: dark) {
     .badge.confirmed { background: #17351f; color: #6fd18a; }
     .badge.unconfirmed { background: #3a2f0a; color: #e0c257; }
     .badge.bulk { background: #1c2547; color: #9fb2ff; }
+    .badge.risk { background: #442326; color: #f5a3a3; }
+    .badge.info { background: #2a2a2a; color: #ccc; }
   }
+  .stat-row { display: flex; flex-wrap: wrap; gap: 20px; }
+  .stat-row > div { min-width: 140px; }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); }
+  .stat-value { font-size: 17px; font-weight: 600; }
 
   /* --- camera: the default view --- */
   #cameraWrap {
     position: relative; width: 100%; min-height: 68vh; min-height: 68dvh;
-    background: #000; overflow: hidden;
+    background: #0a0a0a; overflow: hidden;
   }
   #cameraVideo { width: 100%; height: 100%; position: absolute; inset: 0; display: block; object-fit: cover; }
   #cameraFallback {
     position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     flex-direction: column; gap: 12px; padding: 32px; text-align: center; color: #fff;
-    background: linear-gradient(180deg, #1c1c1e, #000);
+    background: linear-gradient(180deg, #1c1c1e, #0a0a0a);
   }
   #cameraWrap.no-camera #cameraFallback { display: flex; }
   #cameraWrap.no-camera #cameraVideo { display: none; }
@@ -246,9 +254,89 @@ function renderResult(data) {
       + `${v.index_latest_year} n=${v.index_sample_sizes[v.index_latest_year]}`
       + `${v.index_latest_year === '2026' ? ' (2026 is a partial year)' : ''}. `
       + `County-wide trend applied to one property - not a substitute for an actual appraisal, `
-      + `and takes no account of this property's own condition, renovations, or features.</p></section>`;
+      + `and takes no account of this property's own condition, renovations, or features.</p>`;
+
+    if (v.annualized_change_pct !== null && v.annualized_change_pct !== undefined) {
+      const aSign = v.annualized_change_pct >= 0 ? '+' : '';
+      html += `<div class="stat-row" style="margin-top:12px;"><div>`
+        + `<div class="stat-label">Annualized, since ${v.based_on_sale_year}</div>`
+        + `<div class="stat-value">${aSign}${v.annualized_change_pct}%/yr</div></div></div>`;
+    }
+
+    if (v.price_trend && v.price_trend.length > 1) {
+      html += `<p class="note" style="margin-top:12px;">County median price by year (${data.county_detected}):</p>`;
+      html += '<div style="overflow-x:auto;"><table><tr>' + v.price_trend.map(t => `<th>${t.year}</th>`).join('') + '</tr>';
+      html += '<tr>' + v.price_trend.map(t =>
+        `<td>&euro;${t.median.toLocaleString(undefined, {maximumFractionDigits: 0})}<br><span class="note">n=${t.n}</span></td>`
+      ).join('') + '</tr></table></div>';
+    }
+    html += '</section>';
   } else if (data.sale_history.length && data.sale_history[data.sale_history.length - 1].is_bulk_sale) {
     html += `<section><h3>Estimated value today</h3><p class="empty">Not estimated - the only sale on record is a bulk/institutional sale of the whole building, not a comparable single-property transaction.</p></section>`;
+  }
+
+  if (data.locality_stats) {
+    const ls = data.locality_stats;
+    html += `<section><h3>Locality snapshot (${data.locality || 'n/a'})</h3>`;
+    html += `<div class="stat-row">`
+      + `<div><div class="stat-label">Median price</div><div class="stat-value">&euro;${ls.median_price.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`
+      + `<div><div class="stat-label">Sales counted</div><div class="stat-value">${ls.n_sales}</div></div>`
+      + `</div>`;
+    html += `<p class="note">Median of this property's own sale history plus its comparables in the same locality - `
+      + `a much smaller sample than the county index above, so treat as directional, not precise.</p></section>`;
+  }
+
+  if (data.rent) {
+    const r = data.rent;
+    html += `<section><h3>Rent &amp; yield</h3>`;
+    html += `<div class="stat-row">`
+      + `<div><div class="stat-label">Avg. monthly rent, ${r.area_matched}</div><div class="stat-value">&euro;${r.avg_monthly_rent.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`;
+    if (data.rental_yield_pct !== null && data.rental_yield_pct !== undefined) {
+      html += `<div><div class="stat-label">Gross yield</div><div class="stat-value">${data.rental_yield_pct}%</div></div>`;
+    }
+    html += `</div>`;
+    html += `<p class="note">RTB/CSO Rent Index, ${r.year}${r.year !== String(new Date().getFullYear()) ? ' (latest year with data for this area)' : ''} - `
+      + `all bedroom counts and property types pooled. Gross yield is annual rent over the estimated value above, `
+      + `before costs, void periods, or tax.</p></section>`;
+  }
+
+  const geo = data.geo_context;
+  if (geo) {
+    if (geo.zoning) {
+      const z = geo.zoning;
+      html += `<section><h3>Zoning</h3>`;
+      html += `<p><span class="badge info">${z.zone_code || 'n/a'}</span> ${z.zone_category || ''}</p>`;
+      if (z.zone_description) html += `<p class="note">${z.zone_description}</p>`;
+      html += `<p class="note">${z.local_authority || ''}${z.plan_name ? ' &middot; ' + z.plan_name : ''}</p></section>`;
+    }
+
+    if (geo.flood_risk) {
+      const f = geo.flood_risk;
+      html += `<section><h3>Flood risk</h3>`;
+      html += f.in_mapped_flood_extent
+        ? `<p><span class="badge risk">within mapped flood extent</span></p><p class="note">${f.extent_matched}</p>`
+        : `<p><span class="badge confirmed">not in a mapped river flood extent</span></p>`;
+      html += `<p class="note">${f.source}</p></section>`;
+    }
+
+    if (geo.transit) {
+      const t = geo.transit;
+      html += `<section><h3>Transit accessibility</h3>`;
+      html += `<p><span class="badge info">${t.ptal_score}</span></p>`;
+      html += `<p class="note">National Transport Authority PTAL score, ${t.time_period} peak - combines walk time to `
+        + `stops with how frequently they're served, not just proximity.</p></section>`;
+    }
+
+    if (geo.planning_applications && geo.planning_applications.length) {
+      const truncate = (s, n) => (s && s.length > n) ? s.slice(0, n).trim() + '…' : (s || '');
+      html += `<section><h3>Nearby planning applications</h3>`;
+      html += '<table><tr><th>Received</th><th>Status</th><th>Description</th></tr>';
+      for (const p of geo.planning_applications) {
+        html += `<tr><td>${p.received_date || 'n/a'}</td><td>${p.decision || p.status || 'n/a'}</td>`
+          + `<td>${truncate(p.description, 180)}<br><span class="note">${p.address || ''}</span></td></tr>`;
+      }
+      html += '</table><p class="note">Within 300m, most recent first. Descriptions truncated - see the local authority planning register for the full text.</p></section>';
+    }
   }
 
   html += `<section><h3>Comparables nearby (${data.locality || 'n/a'})</h3>`;
