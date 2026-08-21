@@ -810,6 +810,57 @@ def search_address(query_text, top_n=5):
                         "house_confirmed": True,
                     }, county, []
 
+    if query_house_no:
+        # The locality stage above depends on the query's locality text
+        # fuzzy-matching something in PPR's own locality vocabulary - but
+        # a GPS-derived query's "locality" is whatever Nominatim's
+        # city_district/suburb happens to be, which is sometimes an
+        # electoral ward name with no resemblance to any real PPR
+        # locality (found live: "Rathmines West C Ward 1986" scored only
+        # 68/100 against every real Dublin locality, well under the
+        # match floor, so the stage above never ran at all). When that
+        # happens this fell straight through to a whole-string fuzzy
+        # match, which barely weights the house number against 4-5
+        # other matching tokens - and confidently resolved "5 Palmerston
+        # Park" to an unrelated "19 Palmerston Park" sale. House number
+        # plus street name alone, with no locality corroboration, is
+        # still a strong enough signal on its own: try it before falling
+        # back to a plain fuzzy match with no house-number weighting.
+        house_matches = [r for r in candidates if r["house_no"] == query_house_no]
+        if house_matches:
+            query_street = street_portion(query_canonical, query_house_no, query_locality)
+            # token_set_ratio, not token_sort_ratio - PPR's own locality
+            # field is inconsistently extracted (some records leave a
+            # real locality word, like "Rathmines", stuck onto the
+            # street portion instead of in the locality field), so the
+            # query's cleanly-stripped street name is often a strict
+            # subset of the candidate's messier one. token_sort_ratio
+            # penalises that missing word as if it were a mismatch,
+            # scoring the correct "Palmerston Park, Rathmines" (72) lower
+            # than an unrelated "Palmerstown Drive" in a different part
+            # of Dublin (74) - found live, both fell under the old
+            # threshold anyway, so it silently fell through and mismatched
+            # to a different house number entirely. token_set_ratio scores
+            # subset containment near 100 while still correctly scoring
+            # "Palmerstown" (a genuinely different street) well below it.
+            best = max(
+                house_matches,
+                key=lambda r: fuzz.token_set_ratio(
+                    query_street, street_portion(r["canonical"], r["house_no"], r["locality"])
+                ),
+            )
+            best_street = street_portion(best["canonical"], best["house_no"], best["locality"])
+            street_similarity = fuzz.token_set_ratio(query_street, best_street)
+            # Stricter than the locality-corroborated stage above (55)
+            # since there's no second signal backing this one up.
+            if street_similarity >= 90:
+                return {
+                    "canonical": best["canonical"],
+                    "score": 100.0,
+                    "county": county,
+                    "house_confirmed": True,
+                }, county, []
+
     matches = process.extract(
         query_canonical, canon_list, scorer=fuzz.token_sort_ratio, limit=top_n
     )
