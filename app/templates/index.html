@@ -175,12 +175,12 @@
   }
 
   #mapView { height: 220px; border-radius: 8px; overflow: hidden; }
-  #daftLink {
-    display: inline-block; margin-top: 8px; padding: 8px 14px; font-size: 13px;
-    font-weight: 600; border-radius: 999px; text-decoration: none;
-    border: 1px solid var(--border); color: var(--ink);
+  .action-link {
+    display: inline-block; margin-top: 8px; margin-right: 8px; padding: 8px 14px; font-size: 13px;
+    font-weight: 600; border-radius: 999px; text-decoration: none; cursor: pointer;
+    border: 1px solid var(--border); color: var(--ink); background: none; font-family: inherit;
   }
-  #daftLink:hover { border-color: var(--accent); }
+  .action-link:hover { border-color: var(--accent); }
 
   /* Leaflet's default control chrome is styled for a light basemap -
      override to match the app's own surface/border/ink tokens rather
@@ -249,7 +249,10 @@
   </div>
 
 <script>
+let currentResultData = null;
+
 function renderResult(data) {
+  currentResultData = data;
   const resultEl = document.getElementById('result');
 
   let html = '';
@@ -273,8 +276,13 @@ function renderResult(data) {
   html += `<p><strong>Resolved:</strong> ${data.resolved_canonical} ${confBadge}<br>`;
   html += `<span class="score">match score ${data.match_score.toFixed(0)}/100, county: ${data.county_detected || 'not detected'}</span></p>`;
 
+  html += `<div>`;
   if (data.daft_search_url) {
-    html += `<a id="daftLink" href="${data.daft_search_url}" target="_blank" rel="noopener">Check Daft.ie for this address &rarr;</a>`;
+    html += `<a class="action-link" href="${data.daft_search_url}" target="_blank" rel="noopener">Check Daft.ie for this address &rarr;</a>`;
+  }
+  html += `<button class="action-link" onclick="shareResult()">Share &uarr;</button>`;
+  html += `</div>`;
+  if (data.daft_search_url) {
     html += `<p class="note" style="margin-top:4px;">Opens a web search scoped to daft.ie - not a confirmed listing match, `
       + `Daft has no free address-search API to check this directly.</p>`;
   }
@@ -353,6 +361,15 @@ function renderResult(data) {
 
   const geo = data.geo_context;
   if (geo) {
+    if (geo.heritage) {
+      const h = geo.heritage;
+      html += `<section><h3>Heritage</h3>`;
+      html += `<p><span class="badge info">NIAH${h.rating ? ': ' + h.rating : ''}</span>${h.name ? ' ' + h.name : ''}</p>`;
+      const uses = [h.original_use, h.current_use].filter(Boolean);
+      if (uses.length) html += `<p class="note">${uses.join(' &rarr; ')}${h.reg_no ? ' &middot; Reg. No. ' + h.reg_no : ''}</p>`;
+      html += `<p class="note">${h.source}</p></section>`;
+    }
+
     if (geo.zoning) {
       const z = geo.zoning;
       html += `<section><h3>Zoning</h3>`;
@@ -388,6 +405,15 @@ function renderResult(data) {
       }
       html += '</table><p class="note">Within 300m, most recent first. Descriptions truncated - see the local authority planning register for the full text.</p></section>';
     }
+  }
+
+  if (data.building_breakdown && data.building_breakdown.length) {
+    html += `<section><h3>Other units in this building (${data.building_breakdown.length})</h3>`;
+    html += '<table><tr><th>Unit</th><th>Date</th><th>Price</th></tr>';
+    for (const u of data.building_breakdown) {
+      html += `<tr><td>${u.unit}</td><td>${u.date_of_sale}</td><td class="price">&euro;${u.price_eur.toLocaleString()}</td></tr>`;
+    }
+    html += `</table><p class="note">Grouped by building name from PPR's own records - most recent sale shown per unit.</p></section>`;
   }
 
   html += `<section><h3>Comparables on this street${data.comparable_street ? ' (' + data.comparable_street + ')' : ''}</h3>`;
@@ -449,6 +475,36 @@ async function doSearch() {
   const data = await res.json();
   if (!res.ok) { renderError(data); return; }
   renderResult(data);
+}
+
+async function shareResult() {
+  if (!currentResultData) return;
+  const d = currentResultData;
+  const shareUrl = `${location.origin}${location.pathname}?q=${encodeURIComponent(d.query || d.resolved_canonical)}`;
+  const priceLine = d.valuation
+    ? `Est. value: €${Math.round(d.valuation.estimated_value).toLocaleString()}`
+    : `${d.n_sales} sale(s) on record`;
+  const shareText = `${d.resolved_canonical} - ${priceLine}`;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Kerbsight', text: shareText, url: shareUrl });
+    } catch (err) {
+      // AbortError when the user cancels the native share sheet - not an error
+    }
+    return;
+  }
+
+  // desktop/unsupported fallback: copy a shareable link to the clipboard
+  try {
+    await navigator.clipboard.writeText(shareUrl);
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = 'Link copied to clipboard.';
+    document.getElementById('result').prepend(note);
+  } catch (err) {
+    // clipboard access denied - nothing more to fall back to
+  }
 }
 
 function useMyLocation() {
@@ -599,6 +655,15 @@ async function lookupFacing() {
   const data = await res.json();
   if (!res.ok) { renderError(data); return; }
   renderResult(data);
+}
+
+// a shared link (see shareResult()) carries the resolved address as
+// ?q= - run that search immediately so the recipient sees the same
+// result, rather than landing on the bare camera view
+const sharedQuery = new URLSearchParams(location.search).get('q');
+if (sharedQuery) {
+  document.getElementById('q').value = sharedQuery;
+  doSearch();
 }
 
 initCamera();

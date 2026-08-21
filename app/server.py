@@ -660,6 +660,44 @@ def transit_lookup(lat, lon):
         return None
 
 
+NIAH_URL = "https://services-eu1.arcgis.com/HyjXgkV6KGMSF3jt/arcgis/rest/services/NIAHBuildingsOpenData/FeatureServer/0/query"
+NIAH_SEARCH_RADIUS_M = 30
+
+
+def heritage_lookup(lat, lon):
+    """
+    National Inventory of Architectural Heritage record within a tight
+    radius of the point - confirmed live against real per-house-number
+    entries (e.g. individual Georgian houses on Merrion Square, each
+    with its own rating). NIAH is a heritage *survey*, not a legal
+    status: being recorded here is what feeds a local authority's own
+    Record of Protected Structures, but isn't the same as being on it -
+    said explicitly in the returned source note rather than implied.
+    """
+    try:
+        data = _arcgis_query(
+            NIAH_URL, lat, lon,
+            out_fields="REG_NO,NAME,ORIGINAL_TYPE,IN_USE_AS_TYPE,RATING",
+            distance_m=NIAH_SEARCH_RADIUS_M,
+        )
+        feats = data.get("features", [])
+        if not feats:
+            return None
+        a = feats[0]["attributes"]
+        return {
+            "reg_no": a.get("REG_NO"),
+            "name": a.get("NAME"),
+            "original_use": a.get("ORIGINAL_TYPE"),
+            "current_use": a.get("IN_USE_AS_TYPE"),
+            "rating": a.get("RATING"),
+            "source": "National Inventory of Architectural Heritage (NIAH) - a heritage survey "
+                      "record, not itself a statement of legal protection. Check the local "
+                      "authority's own Record of Protected Structures for that.",
+        }
+    except Exception:
+        return None
+
+
 def geo_context(lat, lon):
     if lat is None or lon is None:
         return None
@@ -667,6 +705,7 @@ def geo_context(lat, lon):
         "zoning": zoning_lookup(lat, lon),
         "planning_applications": planning_applications_lookup(lat, lon),
         "flood_risk": flood_risk_lookup(lat, lon),
+        "heritage": heritage_lookup(lat, lon),
         "transit": transit_lookup(lat, lon),
     }
 
@@ -734,6 +773,87 @@ def extract_street_name(raw_address, county):
     street = normaliser.fold(tokens[0])
     street = re.sub(r'[^a-z0-9 ]', '', street).strip()
     return street or None
+
+
+UNIT_KEYWORD_RE = re.compile(r'^\s*(?:apt|apartment|unit|flat)\.?\s*', re.IGNORECASE)
+
+
+def extract_unit_and_building(raw_address):
+    """
+    Unit number and the building name remainder, e.g. ("35", "Orwell
+    Hall, Marianella, Rathgar") from "UNIT 35 ORWELL HALL, MARIANELLA,
+    RATHGAR". Reuses extract_house_no after stripping an optional
+    leading APT/UNIT/FLAT keyword - PPR records the same building's
+    units inconsistently (some rows lead with "UNIT 7", others with a
+    bare "7 Orwell Hall"), so both forms are treated the same way.
+    """
+    s = UNIT_KEYWORD_RE.sub('', raw_address.strip())
+    unit_no, remainder = normaliser.extract_house_no(s)
+    return unit_no, remainder.strip(' ,')
+
+
+def building_key(remainder):
+    """
+    First one or two words of a building-name remainder, used as a
+    LIKE search key. Kept short deliberately - PPR formats the rest of
+    the address (block letters, comma placement) inconsistently across
+    units in the same building ("Orwell Hall Block C, Marianella" vs
+    "Orwell Hall, Block C, Marianella"), so anchoring on more than the
+    building's own name stops matching across those variants.
+    """
+    words = re.findall(r"[A-Za-z']+", remainder)
+    if not words:
+        return None
+    key = " ".join(words[:2]) if len(words) >= 2 else words[0]
+    return key if len(key) >= 5 else None
+
+
+def building_breakdown(county, raw_address):
+    """
+    Every other unit PPR has on record in the same named building,
+    keyed off the building name rather than the street - a Dublin
+    apartment block's units don't share a house number the way a
+    single house's own sale history does. Returns None for anything
+    that isn't itself a flagged unit (a standalone house has no
+    "building" to break down) or where fewer than two units are found.
+    """
+    unit_no, remainder = extract_unit_and_building(raw_address)
+    if not unit_no:
+        return None
+    key = building_key(remainder)
+    if not key:
+        return None
+
+    conn = get_db()
+    rows = conn.execute(
+        f"""
+        SELECT r.address, r.date_of_sale, r.price_eur FROM ppr_raw r
+        WHERE r.county = ? AND r.address LIKE ?
+        ORDER BY {DATE_SORT_SQL}
+        """,
+        (county, f"%{key}%"),
+    ).fetchall()
+    conn.close()
+
+    units = {}
+    for r in rows:
+        u_no, _ = extract_unit_and_building(r["address"])
+        if not u_no:
+            continue
+        units[u_no] = {
+            "unit": u_no,
+            "date_of_sale": r["date_of_sale"],
+            "price_eur": r["price_eur"],
+            "raw_address": r["address"],
+        }
+    if len(units) < 2:
+        return None
+
+    def sort_key(u):
+        m = re.match(r'(\d+)', u["unit"])
+        return (int(m.group(1)) if m else 0, u["unit"])
+
+    return sorted(units.values(), key=sort_key)
 
 
 def search_address(query_text, top_n=5):
@@ -974,6 +1094,7 @@ def property_report(canonical, county, lat=None, lon=None):
             valuation = estimate_current_value(county, latest_sale["price_eur"], sale_year)
 
     geo = geo_context(lat, lon)
+    breakdown = building_breakdown(county, history[0]["address"]) if history else None
 
     return {
         "history": tagged_history,
@@ -983,6 +1104,7 @@ def property_report(canonical, county, lat=None, lon=None):
         "comparables": tagged_comparables,
         "comparable_street": street_name,
         "geo_context": geo,
+        "building_breakdown": breakdown,
     }
 
 
@@ -1071,6 +1193,7 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "comparables": report["comparables"],
         "comparable_street": report["comparable_street"],
         "geo_context": report["geo_context"],
+        "building_breakdown": report["building_breakdown"],
         "lat": lat,
         "lon": lon,
         "daft_search_url": daft_search_url,
