@@ -241,11 +241,17 @@ function renderResult(data) {
   const resultEl = document.getElementById('result');
 
   let html = '';
-  if (data.reverse_geocoded_address) {
+  if (data.identification_method === 'building_footprint' && data.building_match) {
+    html += `<p class="note"><span class="badge confirmed">building match</span> Identified from real building outline data `
+      + `(OpenStreetMap), ${data.building_match.distance_m}m along your compass bearing - a geometric match, not a blind guess.</p>`;
+  } else if (data.reverse_geocoded_address) {
     html += `<p class="note">GPS resolved to: ${data.reverse_geocoded_address}</p>`;
   }
   if (data.heading_deg !== null && data.heading_deg !== undefined) {
-    html += `<p class="note">Compass heading: ${data.heading_deg.toFixed(0)}&deg; - projected ~20m ahead before geocoding, not just standing position.</p>`;
+    const projectionCaveat = data.identification_method === 'building_footprint'
+      ? ''
+      : ' - projected ~20m ahead before geocoding, not just standing position (no building outline found along this bearing, so this is a straight-line guess).';
+    html += `<p class="note">Compass heading: ${data.heading_deg.toFixed(0)}&deg;${projectionCaveat}</p>`;
   }
 
   const confBadge = data.house_confirmed

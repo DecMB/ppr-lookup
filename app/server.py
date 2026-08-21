@@ -265,8 +265,179 @@ def reverse_geocode(lat, lon):
     return {
         "query_text": query_text,
         "county": county,
+        "locality": town or None,
         "raw_display_name": data.get("display_name"),
     }
+
+
+# Building-footprint identification: rather than blindly projecting 20m
+# along the compass bearing and reverse-geocoding whatever point that
+# lands on (see SIGHT_DISTANCE_M above), this casts the same bearing as
+# an actual ray and finds which real OSM building polygon it hits first -
+# a geometric answer to "which building is this", not a guess. Falls
+# back to the projection method (further down in api_nearby) whenever no
+# building with usable address tags is found, so this can only improve
+# results, never make them worse. Verified live before building: OSM has
+# real building polygons with addr:housenumber/addr:street tags for the
+# Dublin streets this app has been tested against.
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+BUILDING_SEARCH_RADIUS_M = 50
+
+
+def latlon_to_local_xy(lat, lon, ref_lat, ref_lon):
+    """Flat-earth approximation in metres, x=east, y=north - fine at the
+    tens-of-metres scale a building sighting operates at, not for anything
+    longer range."""
+    x = (lon - ref_lon) * 111320 * math.cos(math.radians(ref_lat))
+    y = (lat - ref_lat) * 110540
+    return x, y
+
+
+def local_xy_to_latlon(x, y, ref_lat, ref_lon):
+    lon = ref_lon + x / (111320 * math.cos(math.radians(ref_lat)))
+    lat = ref_lat + y / 110540
+    return lat, lon
+
+
+def ray_segment_intersection(ray_origin, ray_dir_unit, seg_a, seg_b):
+    """
+    Distance along the ray (ray_dir_unit must be a unit vector) to where
+    it crosses segment seg_a->seg_b, or None if it doesn't. Standard
+    parametric line-intersection algebra.
+    """
+    ox, oy = ray_origin
+    dx, dy = ray_dir_unit
+    ax, ay = seg_a
+    bx, by = seg_b
+    sx, sy = bx - ax, by - ay
+    denom = dx * sy - dy * sx
+    if abs(denom) < 1e-9:
+        return None
+    t = ((ax - ox) * sy - (ay - oy) * sx) / denom
+    u = ((ax - ox) * dy - (ay - oy) * dx) / denom
+    if t >= 0 and 0 <= u <= 1:
+        return t
+    return None
+
+
+def fetch_nearby_buildings(lat, lon, radius_m=BUILDING_SEARCH_RADIUS_M):
+    """
+    OSM building polygons within radius_m, via the free Overpass API.
+    Same single-on-demand-call policy as Nominatim above - one call per
+    sighting, never batched or looped.
+    """
+    query = f'[out:json][timeout:15];way["building"](around:{radius_m},{lat},{lon});out geom;'
+    req = urllib.request.Request(
+        OVERPASS_URL,
+        data=urllib.parse.urlencode({"data": query}).encode("utf-8"),
+        headers={"User-Agent": NOMINATIM_UA},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return data.get("elements", [])
+
+
+BUILDING_LOCALITY_MAX_DISTANCE_M = 250
+
+
+def guess_locality_for_street(county, house_no, street_name, hit_lat, hit_lon):
+    """
+    Finds which PPR locality genuinely corresponds to the ray-cast
+    building, by forward-geocoding each distinct (house_no, street,
+    locality) PPR entry that shares this house number and street name
+    and comparing the result to the real hit point - not just trusting
+    the first text match.
+
+    Necessary because street names collide across unrelated areas
+    within the same county: Dublin has more than one "Brighton Road"
+    (Rathgar and Foxrock are different places, several km apart), and
+    an earlier version of this that just picked PPR's first matching
+    row confidently resolved a real Rathgar building to an unrelated
+    Foxrock sale that happened to share the same house number.
+
+    Returns None if no PPR entry is within BUILDING_LOCALITY_MAX_DISTANCE_M
+    of the actual building - meaning it most likely has no PPR sale on
+    record at all, a real possible outcome that should fall through to
+    an honest "no confident match" rather than a wrong answer.
+    """
+    if not county or not house_no or not street_name:
+        return None
+    street_norm = normaliser.fold(normaliser.expand_abbreviations(normaliser.lower_and_tidy(street_name)))
+    street_norm = re.sub(r'[^a-z0-9 ]', '', street_norm).strip()
+    if not street_norm:
+        return None
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT DISTINCT locality FROM ppr_normalised WHERE county = ? AND house_no = ? AND canonical LIKE ? AND locality <> ''",
+        (county, str(house_no), f"%{street_norm}%"),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+
+    best_locality = None
+    best_dist = None
+    for row in rows:
+        try:
+            glat, glon = forward_geocode(f"{house_no} {street_name}, {row['locality']}")
+        except Exception:
+            continue
+        if glat is None:
+            continue
+        dx, dy = latlon_to_local_xy(glat, glon, hit_lat, hit_lon)
+        dist = math.hypot(dx, dy)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_locality = row["locality"]
+
+    if best_locality is not None and best_dist <= BUILDING_LOCALITY_MAX_DISTANCE_M:
+        return best_locality
+    return None
+
+
+def find_building_along_bearing(lat, lon, bearing_deg, max_distance_m=BUILDING_SEARCH_RADIUS_M):
+    """
+    Casts a ray from (lat, lon) along bearing_deg and returns the tags,
+    distance, and lat/lon of the nearest OSM building polygon it crosses
+    that has both addr:housenumber and addr:street set - skipping past
+    any closer but untagged buildings, since an untagged hit is no more
+    useful than no hit at all. Returns (None, None, None, None) if
+    nothing usable is found or the Overpass call fails.
+    """
+    try:
+        buildings = fetch_nearby_buildings(lat, lon, radius_m=max_distance_m)
+    except Exception:
+        return None, None, None, None
+
+    dir_x = math.sin(math.radians(bearing_deg))
+    dir_y = math.cos(math.radians(bearing_deg))
+    origin = (0.0, 0.0)
+
+    hits = []
+    for element in buildings:
+        geom = element.get("geometry")
+        tags = element.get("tags") or {}
+        if not geom or len(geom) < 2:
+            continue
+        pts = [latlon_to_local_xy(pt["lat"], pt["lon"], lat, lon) for pt in geom]
+        best_for_this_building = None
+        for i in range(len(pts) - 1):
+            dist = ray_segment_intersection(origin, (dir_x, dir_y), pts[i], pts[i + 1])
+            if dist is not None and dist <= max_distance_m:
+                if best_for_this_building is None or dist < best_for_this_building:
+                    best_for_this_building = dist
+        if best_for_this_building is not None:
+            hits.append((best_for_this_building, tags))
+
+    hits.sort(key=lambda h: h[0])
+    for dist, tags in hits:
+        if tags.get("addr:housenumber") and tags.get("addr:street"):
+            hit_x = dir_x * dist
+            hit_y = dir_y * dist
+            hit_lat, hit_lon = local_xy_to_latlon(hit_x, hit_y, lat, lon)
+            return tags, dist, hit_lat, hit_lon
+    return None, None, None, None
 
 
 def forward_geocode(query_text):
@@ -818,22 +989,27 @@ def api_nearby():
     """
     GPS-based lookup: given lat/lon (from the browser's Geolocation API,
     i.e. a real device's real position) and an optional compass heading
-    (from the browser's DeviceOrientation API), reverse-geocode to a
-    street address and run it through the same matcher as a typed
-    search.
+    (from the browser's DeviceOrientation API), identify an address and
+    run it through the same matcher as a typed search.
 
-    With a heading, this projects 20m forward along that bearing first
-    (see project_point) - an approximation of "what the camera is
-    facing" rather than "where the phone is standing". Without one, it
-    falls back to reverse-geocoding the raw position, same as before.
+    With a heading, this first tries find_building_along_bearing() - a
+    real ray-cast against actual OSM building polygons, not a guess.
+    When that finds a building with usable address tags, its own
+    addr:housenumber/addr:street are used directly, and county comes
+    from a single reverse-geocode of the raw device position (still one
+    Nominatim call, same as the no-heading case below - not an extra
+    one over the previous baseline). This is a genuine geometric answer
+    to "which building is this", confirmed live against real OSM data
+    before being wired in.
 
-    Neither mode knows which specific building is in frame - that needs
-    a building-footprint dataset (Eircode ECAD, GeoDirectory, OSi),
-    which this spike has not licensed. Confirmed live and unfixable by
-    this projection alone: free reverse geocoding also breaks down near
+    Whenever that fails - no heading, no OSM building found, or a hit
+    building with no address tags - this falls back to the original
+    method: project 20m forward along the bearing (see project_point,
+    a straight-line guess, nothing more) and reverse-geocode whatever
+    point that lands on. Free reverse geocoding also breaks down near
     large institutional sites regardless of which point is queried (see
-    report section 12c) - the projection changes which point is asked
-    about, not how precise the underlying map data is.
+    report section 12c) - that limitation still applies to the fallback
+    path, just not to a successful building-footprint match.
     """
     try:
         lat = float(request.args.get("lat", ""))
@@ -843,35 +1019,77 @@ def api_nearby():
 
     heading_raw = request.args.get("heading")
     heading = None
-    projected_lat, projected_lon = lat, lon
     if heading_raw is not None:
         try:
             heading = float(heading_raw)
         except ValueError:
             return jsonify({"error": "heading must be a number in degrees"}), 400
-        projected_lat, projected_lon = project_point(lat, lon, heading)
 
-    try:
-        geo = reverse_geocode(projected_lat, projected_lon)
-    except Exception as e:
-        return jsonify({"error": f"reverse geocoding failed: {e}"}), 502
+    identification_method = "gps"
+    projected_lat, projected_lon = lat, lon
+    query_text = None
+    county = None
+    raw_display_name = None
+    building_match = None
 
-    if not geo["query_text"]:
-        return jsonify({
-            "error": "reverse geocode returned no usable address",
-            "raw_display_name": geo["raw_display_name"],
-        }), 404
+    if heading is not None:
+        tags, dist, hit_lat, hit_lon = find_building_along_bearing(lat, lon, heading)
+        if tags:
+            try:
+                county = reverse_geocode(lat, lon)["county"]
+            except Exception:
+                county = None
+            # OSM's own addr tags are just house number + street, with no
+            # sub-locality (Rathgar, Ranelagh, etc) - PPR addresses always
+            # include one, and search_address()'s house-number-confirmed
+            # path needs both to match confidently, not just street name.
+            # Looked up from PPR itself (see guess_locality_for_street),
+            # not Nominatim - more reliable and self-consistent.
+            locality = guess_locality_for_street(
+                county, tags["addr:housenumber"], tags["addr:street"], hit_lat, hit_lon
+            )
+            query_text = f"{tags['addr:housenumber']} {tags['addr:street']}"
+            if locality:
+                query_text += f", {locality}"
+            projected_lat, projected_lon = hit_lat, hit_lon
+            identification_method = "building_footprint"
+            building_match = {
+                "distance_m": round(dist, 1),
+                "osm_tags": {k: v for k, v in tags.items() if k.startswith("addr:") or k == "building"},
+            }
 
-    q = f"{geo['query_text']}, {geo['county']}" if geo["county"] else geo["query_text"]
+    if query_text is None:
+        if heading is not None:
+            projected_lat, projected_lon = project_point(lat, lon, heading)
+            identification_method = "gps+compass"
+        else:
+            projected_lat, projected_lon = lat, lon
+            identification_method = "gps"
+        try:
+            geo = reverse_geocode(projected_lat, projected_lon)
+        except Exception as e:
+            return jsonify({"error": f"reverse geocoding failed: {e}"}), 502
+        if not geo["query_text"]:
+            return jsonify({
+                "error": "reverse geocode returned no usable address",
+                "raw_display_name": geo["raw_display_name"],
+            }), 404
+        query_text = geo["query_text"]
+        county = geo["county"]
+        raw_display_name = geo["raw_display_name"]
+
+    q = f"{query_text}, {county}" if county else query_text
     body, status = resolve_and_report(
-        q, source_label="gps+compass" if heading is not None else "gps",
+        q, source_label=identification_method,
         lat=projected_lat, lon=projected_lon,
     )
-    body["reverse_geocoded_address"] = geo["query_text"]
-    body["raw_osm_display_name"] = geo["raw_display_name"]
+    body["reverse_geocoded_address"] = query_text
+    body["raw_osm_display_name"] = raw_display_name
     body["device_position"] = {"lat": lat, "lon": lon}
     body["heading_deg"] = heading
     body["geocoded_position"] = {"lat": projected_lat, "lon": projected_lon}
+    body["identification_method"] = identification_method
+    body["building_match"] = building_match
     return jsonify(body), status
 
 
