@@ -179,9 +179,14 @@
   #mapView .leaflet-control-attribution {
     background: rgba(255,255,255,0.75); font-size: 10px;
   }
+  #mapView .leaflet-control-layers {
+    background: var(--surface); color: var(--ink); border-radius: 6px;
+  }
+  #mapView .leaflet-control-layers-expanded { padding: 8px 10px; font-size: 13px; }
   @media (prefers-color-scheme: dark) {
     #mapView .leaflet-control-attribution { background: rgba(26,26,26,0.75); color: var(--muted); }
     #mapView .leaflet-control-attribution a { color: var(--muted); }
+    #mapView .leaflet-control-layers a { color: var(--ink); }
   }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -258,7 +263,7 @@ function renderResult(data) {
 
   if (data.lat != null && data.lon != null) {
     html += `<section><h3>Map</h3><div id="mapView"></div>`
-      + `<p class="note">Satellite imagery centred on the resolved location, approximate - `
+      + `<p class="note">Centred on the resolved location, approximate - toggle Satellite/Map top-right, `
       + `see the note on projection accuracy elsewhere in this report.</p></section>`;
   }
 
@@ -385,10 +390,18 @@ let currentMap = null;
 function renderMap(lat, lon) {
   if (currentMap) { currentMap.remove(); currentMap = null; }
   currentMap = L.map('mapView', { attributionControl: true }).setView([lat, lon], 18);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+
+  const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     maxZoom: 19,
     attribution: 'Esri, Maxar, Earthstar Geographics',
-  }).addTo(currentMap);
+  });
+  const streetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors',
+  });
+
+  streetMap.addTo(currentMap);
+  L.control.layers({ 'Satellite': satellite, 'Map': streetMap }, null, { collapsed: false }).addTo(currentMap);
   L.marker([lat, lon]).addTo(currentMap);
 }
 
