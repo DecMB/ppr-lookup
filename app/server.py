@@ -839,7 +839,7 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
             if geo_row and geo_row["house_no"] and geo_row["locality"]:
                 street = extract_street_name(geo_row["address"], county)
                 if street:
-                    geocode_query = f"{geo_row['house_no']} {street}, {geo_row['locality']}, Ireland"
+                    geocode_query = f"{geo_row['house_no']} {street}, {geo_row['locality']}"
 
             lat, lon = forward_geocode(geocode_query)
         except Exception:
