@@ -27,6 +27,10 @@
     --accent: #2a5adb;
     --error: #b00020;
     --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    /* soft, diffused, multi-layer - an Apple-style elevated card reads
+       as "lifted" mostly through this, not a hard single shadow */
+    --card-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
+    --card-border: rgba(0,0,0,0.06);
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -35,9 +39,14 @@
       --muted: #aaa;       /* ~7.9:1 on --bg */
       --border: #444;
       --border-subtle: #2a2a2a;
-      --surface: #1a1a1a;
+      --surface: #1c1c1e;
       --accent: #6f9bff;
       --error: #ff6b6b;
+      /* shadows barely register on a dark page - lean on a light inset
+         edge (catching a hint of "light from above") plus a subtle
+         outer glow instead */
+      --card-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 24px rgba(0,0,0,0.4);
+      --card-border: rgba(255,255,255,0.07);
     }
   }
 
@@ -60,10 +69,19 @@
   button:active { transform: scale(0.97); }
 
   #result { margin-top: 28px; animation: fade-in 200ms var(--ease-out); }
-  #result > section + section { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
+  #result section {
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    border-radius: 16px;
+    padding: 18px 20px;
+    margin-top: 14px;
+    box-shadow: var(--card-shadow);
+  }
+  #result section:first-child { margin-top: 0; }
   .price { font-weight: 600; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
   td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); font-size: 15px; }
+  tr:last-child td, tr:last-child th { border-bottom: none; }
   .score { color: var(--muted); font-size: 13px; }
   .empty { color: var(--muted); font-style: italic; }
   .error { color: var(--error); }
@@ -89,7 +107,15 @@
   /* --- camera: the default view --- */
   #cameraWrap {
     position: relative; width: 100%; min-height: 68vh; min-height: 68dvh;
+    max-height: 100vh; max-height: 100dvh;
     background: #0a0a0a; overflow: hidden;
+    transition: min-height 320ms var(--ease-out), max-height 320ms var(--ease-out);
+  }
+  #collapsedBar {
+    display: none; align-items: center; justify-content: center; gap: 6px;
+    height: 52px; width: 100%; cursor: pointer; font-size: 14px; font-weight: 600;
+    color: var(--ink); background: var(--surface); border: none; border-bottom: 1px solid var(--border-subtle);
+    font-family: inherit;
   }
   #cameraVideo { width: 100%; height: 100%; position: absolute; inset: 0; display: block; object-fit: cover; }
   #cameraFallback {
@@ -99,6 +125,24 @@
   }
   #cameraWrap.no-camera #cameraFallback { display: flex; }
   #cameraWrap.no-camera #cameraVideo { display: none; }
+
+  /* collapsed once a result is showing - the camera isn't doing
+     anything useful anymore at that point, and giving the result the
+     screen back matters more than keeping the feed visible. The
+     collapsed bar itself is the "search again" control. Declared after
+     .no-camera so it wins on equal specificity when both classes are
+     present (denied/absent camera *and* a result showing) - found live
+     in testing that .no-camera's #cameraFallback{display:flex} was
+     otherwise winning by source order and eating clicks meant for the
+     collapsed bar underneath it. */
+  #cameraWrap.collapsed { min-height: 0; max-height: 52px; }
+  #cameraWrap.collapsed #cameraVideo,
+  #cameraWrap.collapsed #cameraFallback,
+  #cameraWrap.collapsed #cameraTopBar,
+  #cameraWrap.collapsed #crosshair,
+  #cameraWrap.collapsed #cameraBottomBar,
+  #cameraWrap.collapsed #manualPanel { display: none; }
+  #cameraWrap.collapsed #collapsedBar { display: flex; }
 
   /* Apple-style liquid glass: frosted, translucent, glossy top edge.
      Only ever composited over the live camera feed or its fallback
@@ -207,6 +251,7 @@
 <body>
 
   <div id="cameraWrap">
+    <button id="collapsedBar" onclick="expandCamera()">Search again &darr;</button>
     <video id="cameraVideo" autoplay playsinline muted></video>
     <div id="cameraFallback">
       <h1 style="font-size:17px;">Kerbsight</h1>
@@ -579,6 +624,13 @@ function closeManualPanel() {
   document.getElementById('manualPanel').classList.remove('open');
 }
 
+function collapseCamera() {
+  document.getElementById('cameraWrap').classList.add('collapsed');
+}
+function expandCamera() {
+  document.getElementById('cameraWrap').classList.remove('collapsed');
+}
+
 // --- camera + compass mode: the default view ---
 // This does NOT identify which building is in frame - there is no
 // building-footprint data to do that (see report section 12c/15). It
@@ -706,7 +758,7 @@ async function lookupFacing() {
   try {
     const res = await fetch(url, { signal: activeLookupController.signal });
     const data = await res.json();
-    if (!res.ok) { renderError(data); } else { renderResult(data); }
+    if (!res.ok) { renderError(data); } else { renderResult(data); collapseCamera(); }
   } catch (err) {
     if (err.name !== 'AbortError') {
       resultEl.innerHTML = `<p class="error">Lookup failed: ${err.message}</p>`;
