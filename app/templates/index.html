@@ -323,18 +323,6 @@ function renderResult(data) {
       + `to this property.</p></section>`;
   }
 
-  if (data.rent) {
-    const r = data.rent;
-    html += `<section><h3>Rent</h3>`;
-    html += `<div class="stat-row">`
-      + `<div><div class="stat-label">Avg. monthly rent, ${r.area_matched}</div><div class="stat-value">&euro;${r.avg_monthly_rent.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`
-      + `</div>`;
-    html += `<p class="note">RTB/CSO Rent Index, ${r.year}${r.year !== String(new Date().getFullYear()) ? ' (latest year with data for this area)' : ''} - `
-      + `all bedroom counts and property types pooled, so not specific to this property's size. `
-      + `No yield figure shown - dividing an area-wide blended rent by one property's estimated value `
-      + `produces a misleading number when the property is a different size/type than the area average.</p></section>`;
-  }
-
   const geo = data.geo_context;
   if (geo) {
     if (geo.zoning) {

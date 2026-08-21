@@ -453,78 +453,6 @@ def geo_context(lat, lon):
     }
 
 
-# RTB Average Monthly Rent Report, published via CSO's public PxStat API -
-# no key required. Loaded once and cached for the process lifetime (a
-# ~2MB JSON-stat payload covering ~440 areas x 18 years x bedroom count x
-# property type); lookups after the first are pure in-memory indexing.
-RENT_DATASET_URL = "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/RIA02/JSON-stat/2.0/en"
-_RENT_DATASET = None
-
-
-def get_rent_dataset():
-    global _RENT_DATASET
-    if _RENT_DATASET is not None:
-        return _RENT_DATASET
-    try:
-        req = urllib.request.Request(RENT_DATASET_URL, headers={"User-Agent": NOMINATIM_UA})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            _RENT_DATASET = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-    return _RENT_DATASET
-
-
-def rent_lookup(county, locality):
-    """
-    RTB average monthly rent (all bedrooms, all property types, most
-    recent year with data) for the property's locality. RIA02's ~440
-    areas are a mix of county-wide and named town/suburb entries, not a
-    guaranteed match for every PPR locality string - falls back to the
-    county-wide figure when no locality-specific area matches closely.
-    """
-    data = get_rent_dataset()
-    if not data:
-        return None
-
-    area_cat = data["dimension"]["C03004V03625"]["category"]
-    area_codes = area_cat["index"]
-    area_labels = area_cat["label"]
-    candidates = [(code, area_labels[code]) for code in area_codes]
-
-    target = None
-    if locality:
-        pool = [(c, l) for c, l in candidates if county and county.lower() in l.lower()] or candidates
-        match = process.extractOne(locality, [l for _, l in pool], scorer=fuzz.token_sort_ratio)
-        if match and match[1] >= 70:
-            target = next(c for c, l in pool if l == match[0])
-    if not target and county:
-        exact = [c for c, l in candidates if l.strip().lower() == county.strip().lower()]
-        if exact:
-            target = exact[0]
-    if not target:
-        return None
-
-    year_index = data["dimension"]["TLIST(A1)"]["category"]["index"]
-    bed_index = data["dimension"]["C02970V03592"]["category"]["index"]
-    prop_index = data["dimension"]["C02969V03591"]["category"]["index"]
-    size = data["size"]
-    area_pos = area_codes.index(target)
-    bed_pos = bed_index.index("-")
-    prop_pos = prop_index.index("-")
-
-    for year_pos in range(len(year_index) - 1, -1, -1):
-        flat = ((((0) * size[1] + year_pos) * size[2] + bed_pos) * size[3] + prop_pos) * size[4] + area_pos
-        value = data["value"][flat]
-        if value is not None:
-            return {
-                "area_matched": area_labels[target],
-                "year": year_index[year_pos],
-                "avg_monthly_rent": value,
-                "source": "RTB/CSO Rent Index (RIA02)",
-            }
-    return None
-
-
 def detect_county(query_text):
     lowered = query_text.lower()
     for c in COUNTIES:
@@ -777,7 +705,6 @@ def property_report(canonical, county, lat=None, lon=None):
             valuation = estimate_current_value(county, latest_sale["price_eur"], sale_year)
 
     geo = geo_context(lat, lon)
-    rent = rent_lookup(county, locality) if county else None
 
     return {
         "history": tagged_history,
@@ -787,7 +714,6 @@ def property_report(canonical, county, lat=None, lon=None):
         "comparables": tagged_comparables,
         "comparable_street": street_name,
         "geo_context": geo,
-        "rent": rent,
     }
 
 
@@ -871,7 +797,6 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "comparables": report["comparables"],
         "comparable_street": report["comparable_street"],
         "geo_context": report["geo_context"],
-        "rent": report["rent"],
         "lat": lat,
         "lon": lon,
         "daft_search_url": daft_search_url,
