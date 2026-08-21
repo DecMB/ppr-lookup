@@ -91,7 +91,17 @@ def login():
             return redirect(request.args.get("next") or url_for("index"))
         error = "Wrong password."
     return f"""
-    <!doctype html><html><head><title>Kerbsight</title></head>
+    <!doctype html><html><head>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Kerbsight</title>
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+    <link rel="icon" type="image/png" href="/static/favicon-32.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Kerbsight">
+    <meta name="theme-color" content="#0a0a0a">
+    </head>
     <body style="font-family:-apple-system,sans-serif;max-width:320px;margin:80px auto">
     <h1 style="font-size:20px;margin:0 0 16px;">Kerbsight</h1>
     <form method="post">
