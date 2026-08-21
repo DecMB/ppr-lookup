@@ -280,6 +280,11 @@ function renderResult(data) {
   html += `<section><h3>Sale history (${data.n_sales})</h3>`;
   if (data.sale_history.length === 0) {
     html += '<p class="empty">No sales found for this exact address.</p>';
+    if (data.ppr_coverage) {
+      html += `<p class="note">This could mean the property's last sale predates PPR records `
+        + `(the register starts ${data.ppr_coverage.start_label}), or is too recent to have been filed yet `
+        + `(current data runs to ${data.ppr_coverage.latest_label}) - not necessarily that the lookup failed.</p>`;
+    }
   } else {
     html += '<table><tr><th>Date</th><th>Price</th><th>Raw address</th></tr>';
     for (const h of data.sale_history) {
@@ -412,8 +417,13 @@ function renderMap(lat, lon) {
 }
 
 function renderError(data) {
-  document.getElementById('result').innerHTML =
-    `<p class="error">${data.error}${data.county_detected ? ' (county detected: ' + data.county_detected + ')' : ''}</p>`;
+  let html = `<p class="error">${data.error}${data.county_detected ? ' (county detected: ' + data.county_detected + ')' : ''}</p>`;
+  if (data.ppr_coverage) {
+    html += `<p class="note">This could mean the property's last sale predates PPR records `
+      + `(the register starts ${data.ppr_coverage.start_label}), or is too recent to have been filed yet `
+      + `(current data runs to ${data.ppr_coverage.latest_label}) - not necessarily that the address itself is wrong.</p>`;
+  }
+  document.getElementById('result').innerHTML = html;
 }
 
 async function doSearch() {

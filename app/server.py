@@ -159,6 +159,43 @@ def build_price_index():
 PRICE_INDEX = build_price_index()
 
 
+def build_ppr_coverage():
+    """
+    The actual earliest and latest sale dates present in PPR, computed
+    from the data rather than hardcoded - so if the underlying extract
+    is refreshed with a later cutoff, this updates automatically rather
+    than silently going stale. Used to explain a missing sale honestly:
+    a property showing no PPR history might genuinely not have sold
+    within the register's own coverage window, not be a lookup failure.
+    """
+    conn = get_db()
+    row = conn.execute(
+        """
+        SELECT
+          MIN(substr(date_of_sale,7,4) || substr(date_of_sale,4,2) || substr(date_of_sale,1,2)) AS min_sortable,
+          MAX(substr(date_of_sale,7,4) || substr(date_of_sale,4,2) || substr(date_of_sale,1,2)) AS max_sortable
+        FROM ppr_raw
+        """
+    ).fetchone()
+    conn.close()
+
+    month_names = ["", "January", "February", "March", "April", "May", "June",
+                   "July", "August", "September", "October", "November", "December"]
+
+    def to_month_year(sortable):
+        year, month = sortable[:4], sortable[4:6]
+        return f"{month_names[int(month)]} {year}"
+
+    return {
+        "start_year": row["min_sortable"][:4],
+        "start_label": to_month_year(row["min_sortable"]),
+        "latest_label": to_month_year(row["max_sortable"]),
+    }
+
+
+PPR_COVERAGE = build_ppr_coverage()
+
+
 def estimate_current_value(county, last_price, last_sale_year):
     """
     Scale a property's last known sale price by how much the county-level
@@ -896,7 +933,11 @@ def index():
 def resolve_and_report(q, source_label, lat=None, lon=None):
     match, county, raw_matches = search_address(q)
     if not match:
-        return {"error": "no candidates found", "county_detected": county}, 404
+        return {
+            "error": "no candidates found",
+            "county_detected": county,
+            "ppr_coverage": PPR_COVERAGE,
+        }, 404
 
     if match["score"] < MIN_MATCH_SCORE:
         return {
@@ -904,6 +945,7 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
                      f"below the {MIN_MATCH_SCORE} floor)",
             "county_detected": county,
             "closest_candidate": match["canonical"],
+            "ppr_coverage": PPR_COVERAGE,
         }, 404
 
     # GPS-based callers already know where the device is pointing and pass
@@ -971,6 +1013,7 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "lat": lat,
         "lon": lon,
         "daft_search_url": daft_search_url,
+        "ppr_coverage": PPR_COVERAGE,
     }, 200
 
 
