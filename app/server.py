@@ -13,6 +13,8 @@ import secrets
 import sqlite3
 import statistics
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -283,6 +285,35 @@ def project_point(lat, lon, bearing_deg, distance_m=SIGHT_DISTANCE_M):
 NOMINATIM_UA = "ppr-ber-spike-feasibility-research/0.1 (single on-demand lookups only)"
 
 
+def _nominatim_get(url, timeout=8, retries=1):
+    """
+    GET with a single retry on HTTP 429, honouring Retry-After when
+    Nominatim sends one. Confirmed live this is a real, user-facing
+    failure mode, not just test-time rate limiting: Render's free-tier
+    outbound IPs are shared across many tenants, so a single well-paced
+    request from this app can still land in the 429 bucket if Nominatim's
+    per-IP limit was already spent by someone else's traffic through the
+    same address. One retry after a short pause is enough to ride out a
+    transient hit without turning into the kind of repeated/looped
+    calling the usage policy actually forbids.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": NOMINATIM_UA})
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries:
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = 1.5
+                time.sleep(min(delay, 5))
+                continue
+            raise
+
+
 def reverse_geocode(lat, lon):
     """
     Turn a GPS coordinate into a street address via OpenStreetMap's free
@@ -296,9 +327,7 @@ def reverse_geocode(lat, lon):
     url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode({
         "lat": lat, "lon": lon, "format": "json", "addressdetails": 1,
     })
-    req = urllib.request.Request(url, headers={"User-Agent": NOMINATIM_UA})
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    data = _nominatim_get(url)
 
     addr = data.get("address", {})
     house_no = addr.get("house_number", "")
@@ -500,9 +529,7 @@ def forward_geocode(query_text):
     url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode({
         "q": f"{query_text}, Ireland", "format": "json", "limit": 1,
     })
-    req = urllib.request.Request(url, headers={"User-Agent": NOMINATIM_UA})
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        results = json.loads(resp.read().decode("utf-8"))
+    results = _nominatim_get(url)
     if not results:
         return None, None
     return float(results[0]["lat"]), float(results[0]["lon"])
@@ -1294,6 +1321,13 @@ def api_nearby():
             identification_method = "gps"
         try:
             geo = reverse_geocode(projected_lat, projected_lon)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                return jsonify({
+                    "error": "Location lookup is busy right now (rate limited) - wait a "
+                             "few seconds and try again.",
+                }), 502
+            return jsonify({"error": f"reverse geocoding failed: {e}"}), 502
         except Exception as e:
             return jsonify({"error": f"reverse geocoding failed: {e}"}), 502
         if not geo["query_text"]:

@@ -251,6 +251,25 @@
 <script>
 let currentResultData = null;
 
+// Guards against firing a second lookup (any of doSearch/useMyLocation/
+// lookupFacing) while one is already in flight - found live that
+// double-tapping "Look up this building" while walking sent two
+// concurrent requests to the same geocoding call, contributing to a
+// real rate-limit error. Shared across all three entry points, not
+// just the button that was double-tapped, since any combination could
+// overlap the same way.
+let activeLookupController = null;
+
+function isLookupBusy() {
+  return activeLookupController !== null;
+}
+
+function setLookupBtnState(loading) {
+  const btn = document.getElementById('lookupBtn');
+  if (!btn) return;
+  btn.textContent = loading ? 'Cancel lookup' : 'Look up this building';
+}
+
 function renderResult(data) {
   currentResultData = data;
   const resultEl = document.getElementById('result');
@@ -465,16 +484,26 @@ function renderError(data) {
 }
 
 async function doSearch() {
+  if (isLookupBusy()) return;
   const q = document.getElementById('q').value.trim();
   const resultEl = document.getElementById('result');
   if (!q) return;
   resultEl.innerHTML = '<p class="empty">Searching...</p>';
   closeManualPanel();
 
-  const res = await fetch('/api/search?q=' + encodeURIComponent(q));
-  const data = await res.json();
-  if (!res.ok) { renderError(data); return; }
-  renderResult(data);
+  activeLookupController = new AbortController();
+  try {
+    const res = await fetch('/api/search?q=' + encodeURIComponent(q), { signal: activeLookupController.signal });
+    const data = await res.json();
+    if (!res.ok) { renderError(data); return; }
+    renderResult(data);
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      resultEl.innerHTML = `<p class="error">Search failed: ${err.message}</p>`;
+    }
+  } finally {
+    activeLookupController = null;
+  }
 }
 
 async function shareResult() {
@@ -508,6 +537,7 @@ async function shareResult() {
 }
 
 function useMyLocation() {
+  if (isLookupBusy()) return;
   const resultEl = document.getElementById('result');
   if (!navigator.geolocation) {
     resultEl.innerHTML = '<p class="error">This browser does not support geolocation.</p>';
@@ -517,12 +547,22 @@ function useMyLocation() {
   closeManualPanel();
 
   navigator.geolocation.getCurrentPosition(async (pos) => {
+    if (isLookupBusy()) return;
     resultEl.innerHTML = '<p class="empty">Location found, looking up address...</p>';
     const { latitude, longitude } = pos.coords;
-    const res = await fetch(`/api/nearby?lat=${latitude}&lon=${longitude}`);
-    const data = await res.json();
-    if (!res.ok) { renderError(data); return; }
-    renderResult(data);
+    activeLookupController = new AbortController();
+    try {
+      const res = await fetch(`/api/nearby?lat=${latitude}&lon=${longitude}`, { signal: activeLookupController.signal });
+      const data = await res.json();
+      if (!res.ok) { renderError(data); return; }
+      renderResult(data);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        resultEl.innerHTML = `<p class="error">Lookup failed: ${err.message}</p>`;
+      }
+    } finally {
+      activeLookupController = null;
+    }
   }, (err) => {
     resultEl.innerHTML = `<p class="error">Could not get your location: ${err.message}</p>`;
   }, { enableHighAccuracy: true, timeout: 10000 });
@@ -638,6 +678,16 @@ async function requestOrientationIfNeeded() {
 }
 
 async function lookupFacing() {
+  if (activeLookupController) {
+    // a lookup is already running - a second tap on this button cancels
+    // it, rather than firing a second concurrent request
+    activeLookupController.abort();
+    activeLookupController = null;
+    setLookupBtnState(false);
+    document.getElementById('result').innerHTML = '<p class="empty">Cancelled.</p>';
+    return;
+  }
+
   await requestOrientationIfNeeded();
 
   const resultEl = document.getElementById('result');
@@ -651,10 +701,20 @@ async function lookupFacing() {
   let url = `/api/nearby?lat=${latitude}&lon=${longitude}`;
   if (currentHeading !== null) url += `&heading=${currentHeading}`;
 
-  const res = await fetch(url);
-  const data = await res.json();
-  if (!res.ok) { renderError(data); return; }
-  renderResult(data);
+  activeLookupController = new AbortController();
+  setLookupBtnState(true);
+  try {
+    const res = await fetch(url, { signal: activeLookupController.signal });
+    const data = await res.json();
+    if (!res.ok) { renderError(data); } else { renderResult(data); }
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      resultEl.innerHTML = `<p class="error">Lookup failed: ${err.message}</p>`;
+    }
+  } finally {
+    activeLookupController = null;
+    setLookupBtnState(false);
+  }
 }
 
 // a shared link (see shareResult()) carries the resolved address as
