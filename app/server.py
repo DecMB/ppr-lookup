@@ -632,6 +632,70 @@ def planning_applications_lookup(lat, lon, radius_m=300, limit=5):
         return []
 
 
+PROPERTY_PLANNING_RADIUS_M = 20
+
+
+def planning_applications_on_property(lat, lon, resolved_address, county=None, limit=8):
+    """
+    Planning applications for this property's own site specifically -
+    distinct from planning_applications_lookup()'s wider 300m
+    neighbourhood view, which is genuinely "nearby" (a terraced street's
+    worth of other buildings), not "on this property".
+
+    A tight radius alone isn't enough to guarantee that though - Dublin
+    terraced/semi-d houses routinely sit under 20m from their neighbour,
+    and corner sites can put a different street's building within range
+    too (found live: a 73 Highfield Road application showed up for 73
+    Orwell Road, both being house number 73 in Rathgar near the same
+    corner). A plain text-similarity score isn't a strong enough second
+    signal either - "73 ... Road, Rathgar, Dublin 6" overlaps heavily
+    between those two regardless of which road it actually is. Require
+    both the house number (as a whole token, not a substring of a larger
+    number) AND the actual street name to appear in the application's
+    own address text, normalised the same way PPR addresses are.
+    """
+    try:
+        data = _arcgis_query(
+            ARCGIS_PLANNING_URL, lat, lon,
+            out_fields="DevelopmentDescription,DevelopmentAddress,ApplicationStatus,"
+                        "Decision,ReceivedDate,DecisionDate,NumResidentialUnits",
+            distance_m=PROPERTY_PLANNING_RADIUS_M,
+            extra_params={"orderByFields": "ReceivedDate DESC", "resultRecordCount": limit * 3},
+        )
+    except Exception:
+        return []
+
+    street_name = None
+    house_no = None
+    if resolved_address:
+        street_name = extract_street_name(resolved_address, county)
+        house_no, _ = normaliser.extract_house_no(normaliser.lower_and_tidy(resolved_address))
+
+    out = []
+    for f in data.get("features", []):
+        a = f["attributes"]
+        dev_address = a.get("DevelopmentAddress") or ""
+        if street_name or house_no:
+            dev_norm = normaliser.fold(normaliser.expand_abbreviations(normaliser.lower_and_tidy(dev_address)))
+            dev_norm = re.sub(r'[^a-z0-9 ]', ' ', dev_norm)
+            if street_name and street_name not in dev_norm:
+                continue
+            if house_no and not re.search(r'\b' + re.escape(house_no) + r'\b', dev_norm):
+                continue
+        out.append({
+            "description": a.get("DevelopmentDescription"),
+            "address": dev_address,
+            "status": a.get("ApplicationStatus"),
+            "decision": a.get("Decision"),
+            "received_date": _epoch_ms_to_date(a.get("ReceivedDate")),
+            "decision_date": _epoch_ms_to_date(a.get("DecisionDate")),
+            "residential_units": a.get("NumResidentialUnits"),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
 # river flood extent layers on the OPW's National Indicative Fluvial
 # Mapping service, checked worst-case-first: if a point falls inside the
 # more frequent 100-year extent it's also inside the 1000-year one, so
@@ -725,11 +789,12 @@ def heritage_lookup(lat, lon):
         return None
 
 
-def geo_context(lat, lon):
+def geo_context(lat, lon, resolved_address=None, county=None):
     if lat is None or lon is None:
         return None
     return {
         "zoning": zoning_lookup(lat, lon),
+        "planning_applications_on_property": planning_applications_on_property(lat, lon, resolved_address, county=county),
         "planning_applications": planning_applications_lookup(lat, lon),
         "flood_risk": flood_risk_lookup(lat, lon),
         "heritage": heritage_lookup(lat, lon),
@@ -804,6 +869,16 @@ def extract_street_name(raw_address, county):
 
 UNIT_KEYWORD_RE = re.compile(r'^\s*(?:apt|apartment|unit|flat)\.?\s*', re.IGNORECASE)
 
+# Ordinary street-type suffix words - used to tell a real named apartment
+# building ("Orwell Hall", "Marianella") apart from a plain street address
+# ("Orwell Road", "Palmerston Park") when deciding whether a raw PPR
+# address's remainder actually names a building at all.
+STREET_SUFFIX_RE = re.compile(
+    r'\b(road|rd|street|st|avenue|ave|drive|dr|terrace|lane|crescent|grove|walk|way|'
+    r'park|square|sq|close|green|hill|row|place|view|rise|lawn|downs|dale|wood)\.?$',
+    re.IGNORECASE,
+)
+
 
 def extract_unit_and_building(raw_address):
     """
@@ -843,9 +918,24 @@ def building_breakdown(county, raw_address):
     single house's own sale history does. Returns None for anything
     that isn't itself a flagged unit (a standalone house has no
     "building" to break down) or where fewer than two units are found.
+
+    extract_unit_and_building() reuses extract_house_no(), which fires
+    on ANY leading number - not just an actual apartment/unit number -
+    so a plain house like "176 Orwell Road" was being treated as "unit
+    176" of a "building" called Orwell Road, and the LIKE query below
+    then matched every other house number on the same street, showing
+    "40 other units" for an ordinary single house (found live). A real
+    apartment building's remainder is a proper-noun development name
+    ("Orwell Hall", "Marianella", "The Haven"); an ordinary street
+    address's remainder ends in a street-type word ("Orwell Road",
+    "Palmerston Park"). Reject the latter before treating it as a
+    building at all.
     """
     unit_no, remainder = extract_unit_and_building(raw_address)
     if not unit_no:
+        return None
+    first_segment = remainder.split(',')[0].strip()
+    if STREET_SUFFIX_RE.search(first_segment):
         return None
     key = building_key(remainder)
     if not key:
@@ -911,7 +1001,7 @@ def search_address(query_text, top_n=5):
     candidates = load_candidates(conn, county)
     conn.close()
     if not candidates:
-        return None, county, []
+        return None, county, [], "no_match"
 
     canon_list = [r["canonical"] for r in candidates]
 
@@ -949,13 +1039,29 @@ def search_address(query_text, top_n=5):
                 # twice and inflate the score past the first guard). Compare
                 # street name only, with the locality stripped from both
                 # sides, before trusting an exact house-number hit.
-                if street_similarity >= 55:
+                #
+                # 55 turned out to still be far too lenient even after that
+                # fix - PPR's locality field is often a whole postal district
+                # ("Dublin 6"), not a real suburb, so it corroborates nothing
+                # about which of the dozens of streets in that district this
+                # is. Found live: "73 Orwell Road, Rathgar" silently resolved
+                # to "73 Highfield Road, Rathgar" at a *confirmed* 100/100,
+                # because both streets' portions end in the shared word
+                # "rathgar" (leaked out of the locality field, same root
+                # cause as above) which is enough to score 70/100 on its own
+                # despite "orwell" and "highfield" sharing nothing. Checked
+                # this systematically across every same-house-number pair
+                # sharing a Dublin locality bucket: 55 let 9.4% of genuinely
+                # different streets through as a false "confirmed" match; 90
+                # (matching Stage 2.5's bar below, which has no locality
+                # corroboration to lean on at all) cut that to 0.25%.
+                if street_similarity >= 90:
                     return {
                         "canonical": best["canonical"],
                         "score": 100.0,
                         "county": county,
                         "house_confirmed": True,
-                    }, county, []
+                    }, county, [], "ok"
 
     if query_house_no:
         # The locality stage above depends on the query's locality text
@@ -1006,13 +1112,28 @@ def search_address(query_text, top_n=5):
                     "score": 100.0,
                     "county": county,
                     "house_confirmed": True,
-                }, county, []
+                }, county, [], "ok"
+
+    if not query_house_no:
+        # No house number at all - the query is just a street/locality with
+        # nothing to anchor a specific building to. A whole-string fuzzy
+        # match here has only the street name to go on, so it ties across
+        # every house on that street and rapidfuzz's tie-break deterministically
+        # returns whichever one happens to sort first - found live: every
+        # GPS ping along Orwell Road (long residential road, patchy OSM
+        # building-address tagging so reverse-geocoding often can't find a
+        # house number) confidently "resolved" to the same single house,
+        # 176 Orwell Road, no matter where on the road the phone actually
+        # was. A specific-house guess with no house number backing it up is
+        # misinformation dressed up as a lower-confidence answer, not an
+        # honest one - refuse it outright instead.
+        return None, county, [], "no_house_number"
 
     matches = process.extract(
         query_canonical, canon_list, scorer=fuzz.token_sort_ratio, limit=top_n
     )
     if not matches:
-        return None, county, []
+        return None, county, [], "no_match"
 
     best_canonical, score, idx = matches[0]
     return {
@@ -1020,7 +1141,7 @@ def search_address(query_text, top_n=5):
         "score": score,
         "county": county,
         "house_confirmed": False,
-    }, county, matches
+    }, county, matches, "ok"
 
 
 # date_of_sale is stored as literal "DD/MM/YYYY" text. Sorting that
@@ -1120,7 +1241,7 @@ def property_report(canonical, county, lat=None, lon=None):
             sale_year = latest_sale["date_of_sale"][-4:]
             valuation = estimate_current_value(county, latest_sale["price_eur"], sale_year)
 
-    geo = geo_context(lat, lon)
+    geo = geo_context(lat, lon, resolved_address=history[0]["address"] if history else None, county=county)
     breakdown = building_breakdown(county, history[0]["address"]) if history else None
 
     return {
@@ -1141,8 +1262,17 @@ def index():
 
 
 def resolve_and_report(q, source_label, lat=None, lon=None):
-    match, county, raw_matches = search_address(q)
+    match, county, raw_matches, reason = search_address(q)
     if not match:
+        if reason == "no_house_number":
+            return {
+                "error": "couldn't pin down a specific house number here - the street was "
+                         "identified but not which building on it, so no result is shown "
+                         "rather than a guess that could be a different house entirely. "
+                         "Try pointing more directly at the building, or search by address.",
+                "county_detected": county,
+                "ppr_coverage": PPR_COVERAGE,
+            }, 404
         return {
             "error": "no candidates found",
             "county_detected": county,

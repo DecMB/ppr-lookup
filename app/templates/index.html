@@ -106,7 +106,7 @@
 
   /* --- camera: the default view --- */
   #cameraWrap {
-    position: relative; width: 100%; min-height: 68vh; min-height: 68dvh;
+    position: relative; width: 100%; min-height: 100vh; min-height: 100dvh;
     max-height: 100vh; max-height: 100dvh;
     background: #0a0a0a; overflow: hidden;
     transition: min-height 320ms var(--ease-out), max-height 320ms var(--ease-out);
@@ -459,8 +459,19 @@ function renderResult(data) {
         + `stops with how frequently they're served, not just proximity.</p></section>`;
     }
 
+    const truncate = (s, n) => (s && s.length > n) ? s.slice(0, n).trim() + '…' : (s || '');
+
+    if (geo.planning_applications_on_property && geo.planning_applications_on_property.length) {
+      html += `<section><h3>Planning applications on this property</h3>`;
+      html += '<table><tr><th>Received</th><th>Status</th><th>Description</th></tr>';
+      for (const p of geo.planning_applications_on_property) {
+        html += `<tr><td>${p.received_date || 'n/a'}</td><td>${p.decision || p.status || 'n/a'}</td>`
+          + `<td>${truncate(p.description, 180)}<br><span class="note">${p.address || ''}</span></td></tr>`;
+      }
+      html += '</table><p class="note">Matched to this property\'s own address, most recent first. Descriptions truncated - see the local authority planning register for the full text.</p></section>';
+    }
+
     if (geo.planning_applications && geo.planning_applications.length) {
-      const truncate = (s, n) => (s && s.length > n) ? s.slice(0, n).trim() + '…' : (s || '');
       html += `<section><h3>Nearby planning applications</h3>`;
       html += '<table><tr><th>Received</th><th>Status</th><th>Description</th></tr>';
       for (const p of geo.planning_applications) {
