@@ -478,22 +478,6 @@ function renderResult(data) {
       + `to this property.</p></section>`;
   }
 
-  if (data.ber_stats) {
-    const b = data.ber_stats;
-    html += `<section><h3>Energy rating (BER) - area snapshot (${b.area_label})</h3>`;
-    html += `<div class="stat-row">`
-      + `<div><div class="stat-label">Typical rating</div><div class="stat-value">${b.typical_rating}</div></div>`
-      + `<div><div class="stat-label">Median floor area</div><div class="stat-value">${b.median_floor_area_sqm != null ? b.median_floor_area_sqm.toFixed(0) + ' m&sup2;' : 'n/a'}</div></div>`
-      + `</div>`;
-    html += `<div class="stat-row" style="margin-top:12px;">`
-      + `<div><div class="stat-label">A-rated</div><div class="stat-value">${b.pct_a_rated}%</div></div>`
-      + `<div><div class="stat-label">D-rated or worse</div><div class="stat-value">${b.pct_d_or_worse}%</div></div>`
-      + `</div>`;
-    html += `<p class="note">Across ${b.n.toLocaleString()} BER-assessed dwellings in this area - not this property's own rating `
-      + `(SEAI's open dataset has no address field to match a specific cert to a specific property). `
-      + `<a class="action-link" href="https://ndber.seai.ie/BERResearchTool/ber/search.aspx" target="_blank" rel="noopener">Check this property's actual BER &rarr;</a></p></section>`;
-  }
-
   const geo = data.geo_context;
   if (geo) {
     if (geo.heritage) {
@@ -700,9 +684,6 @@ function exportReportPDF() {
   if (d.locality_stats) {
     cover += `<div><div class="kpi-label">Locality median</div>`
       + `<div class="kpi-value">&euro;${d.locality_stats.median_price.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`;
-  }
-  if (d.ber_stats) {
-    cover += `<div><div class="kpi-label">Area typical BER</div><div class="kpi-value">${d.ber_stats.typical_rating}</div></div>`;
   }
   cover += `</div>`;
   document.getElementById('printCover').innerHTML = cover;

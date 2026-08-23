@@ -171,62 +171,6 @@ def build_price_index():
 PRICE_INDEX = build_price_index()
 
 
-DUBLIN_DISTRICT_RE = re.compile(r'^dublin \d+w?$', re.IGNORECASE)
-
-
-def ber_stats_lookup(conn, county, locality):
-    """
-    Area-level BER (Building Energy Rating) snapshot - NOT a per-property
-    rating. SEAI's own open BER extract (ber_raw) has no address or
-    Eircode field at all, only county_name (which for Dublin is actually
-    postal-district granular, e.g. "Dublin 6") and a sa_code field that
-    turned out to be essentially empty (2 non-blank values out of 1.4M
-    rows) - so there's no reliable way to join a specific PPR address to
-    a specific BER cert with this dataset. Getting an individual
-    property's real BER would need a formal request to SEAI for their
-    address-level register, which is the same block noted when this
-    project first tried to source BER data.
-
-    What IS real and useful from this extract: pre-aggregated stats
-    (median floor area, typical rating, % A-rated, % D-or-worse) by the
-    same area granularity PPR's own locality field already gives for
-    Dublin - built once into a small ber_stats table (see the BER
-    integration work), not computed live.
-    """
-    if not county:
-        return None
-    try:
-        row = None
-        if locality and DUBLIN_DISTRICT_RE.match(locality):
-            # PPR locality for Dublin properties is already lowercase
-            # "dublin 6" etc - ber_stats keys on BER's own "Dublin 6" casing
-            district_label = locality[0].upper() + locality[1:]
-            district_label = re.sub(r'(\d+)w$', lambda m: m.group(1) + 'W', district_label, flags=re.IGNORECASE)
-            row = conn.execute(
-                "SELECT * FROM ber_stats WHERE county_name = ?", (district_label,)
-            ).fetchone()
-        if row is None:
-            row = conn.execute(
-                "SELECT * FROM ber_stats WHERE county_name = ?", (f"Co. {county}",)
-            ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if row is None:
-        return None
-    return {
-        "area_label": row["county_name"],
-        "n": row["n"],
-        "typical_rating": row["typical_rating"],
-        "median_floor_area_sqm": row["median_floor_area_sqm"],
-        "pct_a_rated": row["pct_a_rated"],
-        "pct_d_or_worse": row["pct_d_or_worse"],
-        "source": "SEAI National BER Statistics extract - an area-level snapshot (median across all "
-                  "BER-assessed dwellings in this area), not this specific property's own rating. "
-                  "SEAI's open dataset has no address field to match a property to its individual "
-                  "cert; check the property's actual BER at the official register.",
-    }
-
-
 def build_ppr_coverage():
     """
     The actual earliest and latest sale dates present in PPR, computed
@@ -1334,8 +1278,6 @@ def property_report(canonical, county, lat=None, lon=None):
                 "n_sales": len(locality_prices),
             }
 
-    ber_stats = ber_stats_lookup(conn, county, locality)
-
     conn.close()
 
     def tag(row):
@@ -1364,7 +1306,6 @@ def property_report(canonical, county, lat=None, lon=None):
         "comparable_street": street_name,
         "geo_context": geo,
         "building_breakdown": breakdown,
-        "ber_stats": ber_stats,
     }
 
 
@@ -1463,7 +1404,6 @@ def resolve_and_report(q, source_label, lat=None, lon=None):
         "comparable_street": report["comparable_street"],
         "geo_context": report["geo_context"],
         "building_breakdown": report["building_breakdown"],
-        "ber_stats": report["ber_stats"],
         "lat": lat,
         "lon": lon,
         "daft_search_url": daft_search_url,
