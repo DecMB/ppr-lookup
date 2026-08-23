@@ -244,6 +244,58 @@
     #mapView .leaflet-control-attribution a { color: var(--muted); }
     #mapView .leaflet-control-layers a { color: var(--ink); }
   }
+
+  /* Print / PDF export - a standalone report, not a printout of the app
+     chrome. Deliberately forced to a light theme regardless of the
+     device's dark-mode preference (a report meant to be shared/printed
+     needs to read on paper or in an emailed PDF, not assume a dark
+     viewer), and restyled away from the on-screen "elevated card" look
+     (shadows/rounded surfaces are a screen affordance, not a print one)
+     toward a plainer, rule-and-whitespace layout closer to a consulting
+     report than a mobile app screen. */
+  #printCover { display: none; }
+  @media print {
+    * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    body { background: #fff; color: #1a1a1a; }
+    #cameraWrap, .controls, #collapsedBar, header, .action-link,
+    #mapSection, #mapView, #resolvedLine, #daftNote { display: none !important; }
+    .page { max-width: none; padding: 0; }
+    #printCover {
+      display: block; margin-bottom: 28px; padding-bottom: 20px;
+      border-bottom: 2px solid #1a1a1a;
+    }
+    #printCover .eyebrow {
+      font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: #666; margin: 0 0 10px;
+    }
+    #printCover h1 {
+      font-size: 30px; font-family: Georgia, 'Times New Roman', serif;
+      font-weight: 400; letter-spacing: -0.01em; color: #1a1a1a; margin: 0 0 6px;
+    }
+    #printCover .subtitle { font-size: 13px; color: #666; margin: 0 0 18px; }
+    #printCover .kpi-row { display: flex; gap: 36px; flex-wrap: wrap; }
+    #printCover .kpi-label {
+      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #666; margin: 0 0 3px;
+    }
+    #printCover .kpi-value { font-size: 22px; font-weight: 600; color: #1a1a1a; }
+    #result section {
+      background: none; border: none; box-shadow: none; border-radius: 0;
+      padding: 0; margin: 0 0 18px; page-break-inside: avoid;
+    }
+    #result section h3 {
+      font-size: 11px; letter-spacing: 0.08em; color: #444; border-bottom: 1px solid #ccc;
+      padding-bottom: 6px; margin-bottom: 10px;
+    }
+    #result table { page-break-inside: auto; }
+    #result tr { page-break-inside: avoid; }
+    #result .badge { border: 1px solid #999; background: none !important; color: #1a1a1a !important; }
+    a[href]::after { content: ""; } /* suppress default browser URL-after-link in print */
+    #printFooter {
+      display: block; margin-top: 24px; padding-top: 10px; border-top: 1px solid #ccc;
+      font-size: 10px; color: #888;
+    }
+  }
+  #printFooter { display: none; }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -290,7 +342,9 @@
   </div>
 
   <div class="page">
+    <div id="printCover"></div>
     <div id="result"></div>
+    <div id="printFooter"></div>
   </div>
 
 <script>
@@ -337,7 +391,7 @@ function renderResult(data) {
     ? '<span class="badge confirmed">house number confirmed</span>'
     : '<span class="badge unconfirmed">street-level match only - house number not confirmed</span>';
 
-  html += `<p><strong>Resolved:</strong> ${data.resolved_canonical} ${confBadge}<br>`;
+  html += `<p id="resolvedLine"><strong>Resolved:</strong> ${data.resolved_canonical} ${confBadge}<br>`;
   html += `<span class="score">match score ${data.match_score.toFixed(0)}/100, county: ${data.county_detected || 'not detected'}</span></p>`;
 
   html += `<div>`;
@@ -345,14 +399,15 @@ function renderResult(data) {
     html += `<a class="action-link" href="${data.daft_search_url}" target="_blank" rel="noopener">Check Daft.ie for this address &rarr;</a>`;
   }
   html += `<button class="action-link" onclick="shareResult()">Share &uarr;</button>`;
+  html += `<button class="action-link" onclick="exportReportPDF()">Export report &darr;</button>`;
   html += `</div>`;
   if (data.daft_search_url) {
-    html += `<p class="note" style="margin-top:4px;">Opens a web search scoped to daft.ie - not a confirmed listing match, `
+    html += `<p id="daftNote" class="note" style="margin-top:4px;">Opens a web search scoped to daft.ie - not a confirmed listing match, `
       + `Daft has no free address-search API to check this directly.</p>`;
   }
 
   if (data.lat != null && data.lon != null) {
-    html += `<section><h3>Map</h3><div id="mapView"></div>`
+    html += `<section id="mapSection"><h3>Map</h3><div id="mapView"></div>`
       + `<p class="note">Centred on the resolved location, approximate - toggle Satellite/Map top-right, `
       + `see the note on projection accuracy elsewhere in this report.</p></section>`;
   }
@@ -423,6 +478,22 @@ function renderResult(data) {
       + `to this property.</p></section>`;
   }
 
+  if (data.ber_stats) {
+    const b = data.ber_stats;
+    html += `<section><h3>Energy rating (BER) - area snapshot (${b.area_label})</h3>`;
+    html += `<div class="stat-row">`
+      + `<div><div class="stat-label">Typical rating</div><div class="stat-value">${b.typical_rating}</div></div>`
+      + `<div><div class="stat-label">Median floor area</div><div class="stat-value">${b.median_floor_area_sqm != null ? b.median_floor_area_sqm.toFixed(0) + ' m&sup2;' : 'n/a'}</div></div>`
+      + `</div>`;
+    html += `<div class="stat-row" style="margin-top:12px;">`
+      + `<div><div class="stat-label">A-rated</div><div class="stat-value">${b.pct_a_rated}%</div></div>`
+      + `<div><div class="stat-label">D-rated or worse</div><div class="stat-value">${b.pct_d_or_worse}%</div></div>`
+      + `</div>`;
+    html += `<p class="note">Across ${b.n.toLocaleString()} BER-assessed dwellings in this area - not this property's own rating `
+      + `(SEAI's open dataset has no address field to match a specific cert to a specific property). `
+      + `<a class="action-link" href="https://ndber.seai.ie/BERResearchTool/ber/search.aspx" target="_blank" rel="noopener">Check this property's actual BER &rarr;</a></p></section>`;
+  }
+
   const geo = data.geo_context;
   if (geo) {
     if (geo.heritage) {
@@ -449,6 +520,16 @@ function renderResult(data) {
         ? `<p><span class="badge risk">within mapped flood extent</span></p><p class="note">${f.extent_matched}</p>`
         : `<p><span class="badge confirmed">not in a mapped river flood extent</span></p>`;
       html += `<p class="note">${f.source}</p></section>`;
+    }
+
+    if (geo.derelict) {
+      const d = geo.derelict;
+      html += `<section><h3>Derelict site status</h3>`;
+      html += `<p><span class="badge risk">on Dublin City Council's Derelict Sites Register</span>`
+        + `${d.active_case === 'Yes' ? ' <span class="badge risk">active case</span>' : ''}</p>`;
+      if (d.description) html += `<p class="note">${d.description}</p>`;
+      html += `<p class="note">Reference ${d.reference_number || 'n/a'}${d.date_added ? ' &middot; added ' + d.date_added : ''}</p>`;
+      html += `<p class="note">${d.source}</p></section>`;
     }
 
     if (geo.transit) {
@@ -553,6 +634,7 @@ async function doSearch() {
     const data = await res.json();
     if (!res.ok) { renderError(data); return; }
     renderResult(data);
+    collapseCamera();
   } catch (err) {
     if (err.name !== 'AbortError') {
       resultEl.innerHTML = `<p class="error">Search failed: ${err.message}</p>`;
@@ -592,6 +674,46 @@ async function shareResult() {
   }
 }
 
+// Builds a standalone cover block + footer (see the print stylesheet)
+// and hands off to the browser's native print dialog, which is what
+// actually produces the PDF ("Save as PDF" as the destination) - no
+// server-side rendering dependency, and it's the one export path that
+// reliably captures the exact same data just rendered on screen rather
+// than a second render pass that could drift from it.
+function exportReportPDF() {
+  if (!currentResultData) return;
+  const d = currentResultData;
+  const displayAddress = (d.sale_history && d.sale_history.length)
+    ? d.sale_history[d.sale_history.length - 1].address
+    : d.resolved_canonical;
+  const generated = new Date().toLocaleDateString('en-IE', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  let cover = `<p class="eyebrow">Kerbsight &middot; Property Report</p>`;
+  cover += `<h1>${displayAddress}</h1>`;
+  cover += `<p class="subtitle">${d.county_detected || ''}${d.locality ? ' &middot; ' + d.locality : ''} &middot; Prepared ${generated}</p>`;
+  cover += `<div class="kpi-row">`;
+  if (d.valuation) {
+    cover += `<div><div class="kpi-label">Estimated value today</div>`
+      + `<div class="kpi-value">&euro;${Math.round(d.valuation.estimated_value).toLocaleString()}</div></div>`;
+  }
+  cover += `<div><div class="kpi-label">Recorded sales</div><div class="kpi-value">${d.n_sales}</div></div>`;
+  if (d.locality_stats) {
+    cover += `<div><div class="kpi-label">Locality median</div>`
+      + `<div class="kpi-value">&euro;${d.locality_stats.median_price.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`;
+  }
+  if (d.ber_stats) {
+    cover += `<div><div class="kpi-label">Area typical BER</div><div class="kpi-value">${d.ber_stats.typical_rating}</div></div>`;
+  }
+  cover += `</div>`;
+  document.getElementById('printCover').innerHTML = cover;
+
+  document.getElementById('printFooter').innerHTML =
+    `<p>Kerbsight &middot; Built from the Property Price Register and public planning/zoning/heritage data sources cited `
+    + `throughout this report &middot; Not a valuation or legal advice &middot; Generated ${generated}</p>`;
+
+  window.print();
+}
+
 function useMyLocation() {
   if (isLookupBusy()) return;
   const resultEl = document.getElementById('result');
@@ -612,6 +734,7 @@ function useMyLocation() {
       const data = await res.json();
       if (!res.ok) { renderError(data); return; }
       renderResult(data);
+      collapseCamera();
     } catch (err) {
       if (err.name !== 'AbortError') {
         resultEl.innerHTML = `<p class="error">Lookup failed: ${err.message}</p>`;
