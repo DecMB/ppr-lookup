@@ -313,10 +313,13 @@
   #printFooter { display: none; }
 
   .area-chart circle.chart-point {
-    fill: var(--bg); stroke: var(--accent); stroke-width: 2;
+    fill: var(--surface); stroke: var(--muted); stroke-width: 1.75;
     cursor: pointer; transition: r 120ms var(--ease-out);
   }
   .area-chart circle.chart-point:hover { r: 6; }
+  .area-chart circle.chart-point-primary {
+    fill: var(--surface); stroke: var(--accent); stroke-width: 2.25;
+  }
   .chart-tooltip {
     display: none; position: fixed; z-index: 1000; pointer-events: none;
     background: var(--ink); color: var(--bg); font-size: 12px; line-height: 1.4;
@@ -408,40 +411,133 @@ function setLookupBtnState(loading) {
 // narrow phone screens.
 let chartIdCounter = 0;
 
-function buildAreaChartSVG(points) {
-  const W = 700, H = 200, padTop = 16, padBottom = 26, padX = 22;
-  const gid = 'chartGrad' + (chartIdCounter++);
-  const values = points.map(p => p.value);
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = (max - min) || 1;
-  const innerH = H - padTop - padBottom;
-  const stepX = points.length > 1 ? (W - padX * 2) / (points.length - 1) : 0;
-  const xFor = (i) => padX + i * stepX;
-  const yFor = (v) => padTop + innerH * (1 - (v - min) / range);
+function fmtEuro(v) {
+  return '&euro;' + v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
 
-  const coords = points.map((p, i) => [xFor(i), yFor(p.value)]);
-  const lineD = 'M' + coords.map(c => c.join(',')).join(' L');
-  const areaD = lineD + ` L${coords[coords.length - 1][0]},${H - padBottom} L${coords[0][0]},${H - padBottom} Z`;
+// Overlays this property's own value trajectory on the same axes as the
+// county median context line, x-axis reversed (today on the left, oldest
+// year on the right) to match the "most recent first" convention every
+// other list/table in this report already uses. Property values and
+// county medians can differ by several multiples of each other (a
+// property well above the county median would flatten the county line
+// to near-invisible on one shared linear scale) - when that gap is wide
+// enough to matter, each series gets its own vertical band with a
+// visible break between them, rather than forcing one shared scale that
+// would make one series unreadable.
+function buildComparisonChartSVG(propertySeries, countySeries) {
+  const W = 700, H = 250, padTop = 34, padBottom = 26, padX = 24;
+  const gid = 'chartGrad' + (chartIdCounter++);
+  const innerH = H - padTop - padBottom;
+
+  // x-axis: county series already covers the full (wider) year window -
+  // reverse it so index 0 is the most recent year, on the left.
+  const years = countySeries.map(p => p.year).slice().reverse();
+  const countyByYear = Object.fromEntries(countySeries.map(p => [p.year, p.value]));
+  const propByYear = Object.fromEntries(propertySeries.map(p => [p.year, p.value]));
+  const stepX = years.length > 1 ? (W - padX * 2) / (years.length - 1) : 0;
+  const xFor = (i) => padX + i * stepX;
+
+  const countyVals = countySeries.map(p => p.value);
+  const propVals = propertySeries.map(p => p.value);
+  const countyMin = Math.min(...countyVals), countyMax = Math.max(...countyVals);
+  const propMin = Math.min(...propVals), propMax = Math.max(...propVals);
+
+  // Only break the axis when there's a real, mostly-empty gap between the
+  // two ranges - otherwise (comparable value ranges) a single shared
+  // scale is simpler and just as readable.
+  const gap = propMin - countyMax;
+  const combinedSpan = Math.max(propMax, countyMax) - Math.min(propMin, countyMin) || 1;
+  const useBreak = gap > 0 && gap / combinedSpan > 0.12;
+
+  let yForProp, yForCounty, breakY = null;
+  if (useBreak) {
+    const breakZoneH = innerH * 0.12;
+    const bandH = (innerH - breakZoneH) / 2;
+    const propRange = (propMax - propMin) || 1;
+    const countyRange = (countyMax - countyMin) || 1;
+    yForProp = (v) => padTop + bandH * (1 - (v - propMin) / propRange);
+    yForCounty = (v) => padTop + bandH + breakZoneH + bandH * (1 - (v - countyMin) / countyRange);
+    breakY = padTop + bandH + breakZoneH / 2;
+  } else {
+    const min = Math.min(propMin, countyMin), max = Math.max(propMax, countyMax);
+    const range = (max - min) || 1;
+    const sharedY = (v) => padTop + innerH * (1 - (v - min) / range);
+    yForProp = sharedY;
+    yForCounty = sharedY;
+  }
+
+  const countyCoords = years.map((y, i) => [xFor(i), yForCounty(countyByYear[y])]);
+  // property series only covers years at/after the sale - a contiguous
+  // prefix of `years` since it's reversed (most recent first)
+  const propYears = years.filter(y => y in propByYear);
+  const propCoords = propYears.map((y, i) => [xFor(i), yForProp(propByYear[y])]);
+
+  const pathD = (coords) => 'M' + coords.map(c => c.join(',')).join(' L');
+  const countyLineD = pathD(countyCoords);
+  const propLineD = pathD(propCoords);
+  const propAreaD = propCoords.length > 1
+    ? propLineD + ` L${propCoords[propCoords.length - 1][0]},${padTop + innerH} L${propCoords[0][0]},${padTop + innerH} Z`
+    : '';
 
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="area-chart" style="width:100%;height:auto;display:block;">`;
   svg += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">`
-    + `<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35"/>`
+    + `<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.32"/>`
     + `<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>`;
-  for (let g = 0; g <= 2; g++) {
-    const gy = padTop + innerH * (g / 2);
-    svg += `<line x1="${padX}" y1="${gy}" x2="${W - padX}" y2="${gy}" stroke="var(--border-subtle)" stroke-width="1"/>`;
+
+  if (useBreak) {
+    // break indicator: two short diagonal ticks at the left edge, plus a
+    // faint dashed rule across the width, marking the axis discontinuity
+    svg += `<line x1="${padX}" y1="${breakY}" x2="${W - padX}" y2="${breakY}" stroke="var(--border-subtle)" stroke-width="1" stroke-dasharray="4 4"/>`;
+    for (const dx of [-4, 4]) {
+      svg += `<line x1="${padX + dx - 5}" y1="${breakY - 7}" x2="${padX + dx + 5}" y2="${breakY + 7}" stroke="var(--surface)" stroke-width="4"/>`;
+      svg += `<line x1="${padX + dx - 5}" y1="${breakY - 7}" x2="${padX + dx + 5}" y2="${breakY + 7}" stroke="var(--muted)" stroke-width="1.5"/>`;
+    }
+  } else {
+    for (let g = 0; g <= 2; g++) {
+      const gy = padTop + innerH * (g / 2);
+      svg += `<line x1="${padX}" y1="${gy}" x2="${W - padX}" y2="${gy}" stroke="var(--border-subtle)" stroke-width="1"/>`;
+    }
   }
-  svg += `<path d="${areaD}" fill="url(#${gid})" stroke="none"/>`;
-  svg += `<path d="${lineD}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
-  points.forEach((p, i) => {
-    const [x, y] = coords[i];
-    svg += `<circle cx="${x}" cy="${y}" r="4" class="chart-point" `
-      + `onmouseenter="showChartTooltip(event, ${JSON.stringify(p.label)}, ${JSON.stringify(p.tooltip)})" `
+
+  if (propAreaD) svg += `<path d="${propAreaD}" fill="url(#${gid})" stroke="none"/>`;
+  svg += `<path d="${countyLineD}" fill="none" stroke="var(--muted)" stroke-width="1.75" stroke-dasharray="5 4" stroke-linejoin="round" stroke-linecap="round"/>`;
+  svg += `<path d="${propLineD}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  years.forEach((y, i) => {
+    const [x, cy] = countyCoords[i];
+    svg += `<circle cx="${x}" cy="${cy}" r="3" class="chart-point" `
+      + `onmouseenter="showChartTooltip(event, ${JSON.stringify(y)}, ${JSON.stringify('County median: ' + fmtEuro(countyByYear[y]))})" `
       + `onmousemove="positionChartTooltip(event)" onmouseleave="hideChartTooltip()"/>`;
   });
-  points.forEach((p, i) => {
-    svg += `<text x="${xFor(i)}" y="${H - 6}" font-size="12" fill="var(--muted)" text-anchor="middle">${p.label}</text>`;
+  propYears.forEach((y, i) => {
+    const [x, py] = propCoords[i];
+    svg += `<circle cx="${x}" cy="${py}" r="4" class="chart-point chart-point-primary" `
+      + `onmouseenter="showChartTooltip(event, ${JSON.stringify(y)}, ${JSON.stringify('This property: ' + fmtEuro(propByYear[y]))})" `
+      + `onmousemove="positionChartTooltip(event)" onmouseleave="hideChartTooltip()"/>`;
   });
+
+  // explicit, always-visible labels for the sale price and current
+  // estimate - the two figures that matter most, not left to a hover
+  // only touch/desktop-with-a-mouse users would ever see
+  const [saleX, saleY] = propCoords[propCoords.length - 1];
+  const [curX, curY] = propCoords[0];
+  const saleLabelAnchor = saleX > W - padX - 60 ? 'end' : 'start';
+  const saleLabelX = saleLabelAnchor === 'end' ? saleX - 8 : saleX + 8;
+  svg += `<text x="${saleLabelX}" y="${saleY + 20}" font-size="13" font-weight="600" fill="var(--accent)" text-anchor="${saleLabelAnchor}">${fmtEuro(propByYear[propYears[propYears.length - 1]])}</text>`;
+  svg += `<text x="${curX + 8}" y="${curY - 12}" font-size="13" font-weight="600" fill="var(--accent)" text-anchor="start">${fmtEuro(propByYear[propYears[0]])}</text>`;
+
+  years.forEach((y, i) => {
+    svg += `<text x="${xFor(i)}" y="${H - 6}" font-size="12" fill="var(--muted)" text-anchor="middle">${y}</text>`;
+  });
+
+  svg += `<g font-size="12" fill="var(--muted)">`
+    + `<line x1="${padX}" y1="10" x2="${padX + 16}" y2="10" stroke="var(--accent)" stroke-width="2.5"/>`
+    + `<text x="${padX + 22}" y="14" fill="var(--ink)">This property</text>`
+    + `<line x1="${padX + 130}" y1="10" x2="${padX + 146}" y2="10" stroke="var(--muted)" stroke-width="1.75" stroke-dasharray="5 4"/>`
+    + `<text x="${padX + 152}" y="14">County median</text>`
+    + `</g>`;
+
   svg += '</svg>';
   return svg;
 }
@@ -556,22 +652,15 @@ function renderResult(data) {
         + `<div class="stat-value">${aSign}${v.annualized_change_pct}%/yr</div></div></div>`;
     }
 
-    if (v.value_trajectory && v.value_trajectory.length > 1) {
-      html += `<p class="note" style="margin-top:16px;">This property's estimated value, ${v.based_on_sale_year} sale price scaled forward to today:</p>`;
-      html += buildAreaChartSVG(v.value_trajectory.map(t => ({
-        label: t.year,
-        value: t.value,
-        tooltip: `&euro;${t.value.toLocaleString(undefined, {maximumFractionDigits: 0})}`,
-      })));
+    if (v.value_trajectory && v.value_trajectory.length > 1 && v.price_trend && v.price_trend.length > 1) {
+      html += `<p class="note" style="margin-top:16px;">This property vs the county median, most recent year first:</p>`;
+      html += buildComparisonChartSVG(
+        v.value_trajectory,
+        v.price_trend.map(t => ({ year: t.year, value: t.median }))
+      );
     }
 
     if (v.price_trend && v.price_trend.length > 1) {
-      html += `<p class="note" style="margin-top:16px;">For context, county median price by year (${data.county_detected}):</p>`;
-      html += buildAreaChartSVG(v.price_trend.map(t => ({
-        label: t.year,
-        value: t.median,
-        tooltip: `&euro;${t.median.toLocaleString(undefined, {maximumFractionDigits: 0})} &middot; n=${t.n}`,
-      })));
       html += '<div style="overflow-x:auto;"><table><tr>' + v.price_trend.map(t => `<th>${t.year}</th>`).join('') + '</tr>';
       html += '<tr>' + v.price_trend.map(t =>
         `<td>&euro;${t.median.toLocaleString(undefined, {maximumFractionDigits: 0})}<br><span class="note">n=${t.n}</span></td>`
