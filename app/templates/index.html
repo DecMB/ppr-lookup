@@ -296,6 +296,21 @@
     }
   }
   #printFooter { display: none; }
+
+  .area-chart circle.chart-point {
+    fill: var(--bg); stroke: var(--accent); stroke-width: 2;
+    cursor: pointer; transition: r 120ms var(--ease-out);
+  }
+  .area-chart circle.chart-point:hover { r: 6; }
+  .chart-tooltip {
+    display: none; position: fixed; z-index: 1000; pointer-events: none;
+    background: var(--ink); color: var(--bg); font-size: 12px; line-height: 1.4;
+    padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+    box-shadow: var(--card-shadow);
+  }
+  @media print {
+    .area-chart circle.chart-point { fill: #fff; }
+  }
 </style>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -367,6 +382,78 @@ function setLookupBtnState(loading) {
   const btn = document.getElementById('lookupBtn');
   if (!btn) return;
   btn.textContent = loading ? 'Cancel lookup' : 'Look up this building';
+}
+
+// Dependency-free SVG area chart - no charting library, no build step,
+// styled entirely off the app's own CSS variables so it themes for free
+// in both light and dark mode. viewBox is left unscaled (no
+// preserveAspectRatio override) so the browser's default uniform
+// scaling keeps circles round and lines proportional at any width,
+// rather than stretching to a fixed pixel height and distorting on
+// narrow phone screens.
+let chartIdCounter = 0;
+
+function buildAreaChartSVG(points) {
+  const W = 700, H = 200, padTop = 16, padBottom = 26, padX = 22;
+  const gid = 'chartGrad' + (chartIdCounter++);
+  const values = points.map(p => p.value);
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max - min) || 1;
+  const innerH = H - padTop - padBottom;
+  const stepX = points.length > 1 ? (W - padX * 2) / (points.length - 1) : 0;
+  const xFor = (i) => padX + i * stepX;
+  const yFor = (v) => padTop + innerH * (1 - (v - min) / range);
+
+  const coords = points.map((p, i) => [xFor(i), yFor(p.value)]);
+  const lineD = 'M' + coords.map(c => c.join(',')).join(' L');
+  const areaD = lineD + ` L${coords[coords.length - 1][0]},${H - padBottom} L${coords[0][0]},${H - padBottom} Z`;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="area-chart" style="width:100%;height:auto;display:block;">`;
+  svg += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">`
+    + `<stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35"/>`
+    + `<stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>`;
+  for (let g = 0; g <= 2; g++) {
+    const gy = padTop + innerH * (g / 2);
+    svg += `<line x1="${padX}" y1="${gy}" x2="${W - padX}" y2="${gy}" stroke="var(--border-subtle)" stroke-width="1"/>`;
+  }
+  svg += `<path d="${areaD}" fill="url(#${gid})" stroke="none"/>`;
+  svg += `<path d="${lineD}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+  points.forEach((p, i) => {
+    const [x, y] = coords[i];
+    svg += `<circle cx="${x}" cy="${y}" r="4" class="chart-point" `
+      + `onmouseenter="showChartTooltip(event, ${JSON.stringify(p.label)}, ${JSON.stringify(p.tooltip)})" `
+      + `onmousemove="positionChartTooltip(event)" onmouseleave="hideChartTooltip()"/>`;
+  });
+  points.forEach((p, i) => {
+    svg += `<text x="${xFor(i)}" y="${H - 6}" font-size="12" fill="var(--muted)" text-anchor="middle">${p.label}</text>`;
+  });
+  svg += '</svg>';
+  return svg;
+}
+
+function showChartTooltip(evt, label, text) {
+  let tip = document.getElementById('chartTooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'chartTooltip';
+    tip.className = 'chart-tooltip';
+    document.body.appendChild(tip);
+  }
+  tip.innerHTML = `<strong>${label}</strong><br>${text}`;
+  tip.style.display = 'block';
+  positionChartTooltip(evt);
+}
+
+function positionChartTooltip(evt) {
+  const tip = document.getElementById('chartTooltip');
+  if (!tip) return;
+  tip.style.left = (evt.clientX + 14) + 'px';
+  tip.style.top = (evt.clientY - 14) + 'px';
+}
+
+function hideChartTooltip() {
+  const tip = document.getElementById('chartTooltip');
+  if (tip) tip.style.display = 'none';
 }
 
 function renderResult(data) {
@@ -456,6 +543,11 @@ function renderResult(data) {
 
     if (v.price_trend && v.price_trend.length > 1) {
       html += `<p class="note" style="margin-top:12px;">County median price by year (${data.county_detected}):</p>`;
+      html += buildAreaChartSVG(v.price_trend.map(t => ({
+        label: t.year,
+        value: t.median,
+        tooltip: `&euro;${t.median.toLocaleString(undefined, {maximumFractionDigits: 0})} &middot; n=${t.n}`,
+      })));
       html += '<div style="overflow-x:auto;"><table><tr>' + v.price_trend.map(t => `<th>${t.year}</th>`).join('') + '</tr>';
       html += '<tr>' + v.price_trend.map(t =>
         `<td>&euro;${t.median.toLocaleString(undefined, {maximumFractionDigits: 0})}<br><span class="note">n=${t.n}</span></td>`
