@@ -432,7 +432,7 @@ function buildComparisonChartSVG(propertySeries, countySeries) {
 
   // x-axis: county series already covers the full (wider) year window -
   // reverse it so index 0 is the most recent year, on the left.
-  const years = countySeries.map(p => p.year).slice().reverse();
+  const years = countySeries.map(p => p.year);
   const countyByYear = Object.fromEntries(countySeries.map(p => [p.year, p.value]));
   const propByYear = Object.fromEntries(propertySeries.map(p => [p.year, p.value]));
   const stepX = years.length > 1 ? (W - padX * 2) / (years.length - 1) : 0;
@@ -520,12 +520,12 @@ function buildComparisonChartSVG(propertySeries, countySeries) {
   // explicit, always-visible labels for the sale price and current
   // estimate - the two figures that matter most, not left to a hover
   // only touch/desktop-with-a-mouse users would ever see
-  const [saleX, saleY] = propCoords[propCoords.length - 1];
-  const [curX, curY] = propCoords[0];
-  const saleLabelAnchor = saleX > W - padX - 60 ? 'end' : 'start';
-  const saleLabelX = saleLabelAnchor === 'end' ? saleX - 8 : saleX + 8;
-  svg += `<text x="${saleLabelX}" y="${saleY + 20}" font-size="13" font-weight="600" fill="var(--accent)" text-anchor="${saleLabelAnchor}">${fmtEuro(propByYear[propYears[propYears.length - 1]])}</text>`;
-  svg += `<text x="${curX + 8}" y="${curY - 12}" font-size="13" font-weight="600" fill="var(--accent)" text-anchor="start">${fmtEuro(propByYear[propYears[0]])}</text>`;
+  const [saleX, saleY] = propCoords[0];
+  const [curX, curY] = propCoords[propCoords.length - 1];
+  svg += `<text x="${saleX + 8}" y="${saleY + 20}" font-size="13" font-weight="600" fill="var(--accent)" text-anchor="start">${fmtEuro(propByYear[propYears[0]])}</text>`;
+  const curLabelAnchor = curX > W - padX - 60 ? 'end' : 'start';
+  const curLabelX = curLabelAnchor === 'end' ? curX - 8 : curX + 8;
+  svg += `<text x="${curLabelX}" y="${curY - 12}" font-size="13" font-weight="600" fill="var(--accent)" text-anchor="${curLabelAnchor}">${fmtEuro(propByYear[propYears[propYears.length - 1]])}</text>`;
 
   years.forEach((y, i) => {
     svg += `<text x="${xFor(i)}" y="${H - 6}" font-size="12" fill="var(--muted)" text-anchor="middle">${y}</text>`;
@@ -653,7 +653,7 @@ function renderResult(data) {
     }
 
     if (v.value_trajectory && v.value_trajectory.length > 1 && v.price_trend && v.price_trend.length > 1) {
-      html += `<p class="note" style="margin-top:16px;">This property vs the county median, most recent year first:</p>`;
+      html += `<p class="note" style="margin-top:16px;">This property vs the county median:</p>`;
       html += buildComparisonChartSVG(
         v.value_trajectory,
         v.price_trend.map(t => ({ year: t.year, value: t.median }))
@@ -816,6 +816,7 @@ async function doSearch() {
   if (!q) return;
   resultEl.innerHTML = '<p class="empty">Searching...</p>';
   closeManualPanel();
+  collapseCamera();
 
   activeLookupController = new AbortController();
   try {
@@ -823,7 +824,6 @@ async function doSearch() {
     const data = await res.json();
     if (!res.ok) { renderError(data); return; }
     renderResult(data);
-    collapseCamera();
   } catch (err) {
     if (err.name !== 'AbortError') {
       resultEl.innerHTML = `<p class="error">Search failed: ${err.message}</p>`;
@@ -913,6 +913,7 @@ function useMyLocation() {
   navigator.geolocation.getCurrentPosition(async (pos) => {
     if (isLookupBusy()) return;
     resultEl.innerHTML = '<p class="empty">Location found, looking up address...</p>';
+    collapseCamera();
     const { latitude, longitude } = pos.coords;
     activeLookupController = new AbortController();
     try {
@@ -920,7 +921,6 @@ function useMyLocation() {
       const data = await res.json();
       if (!res.ok) { renderError(data); return; }
       renderResult(data);
-      collapseCamera();
     } catch (err) {
       if (err.name !== 'AbortError') {
         resultEl.innerHTML = `<p class="error">Lookup failed: ${err.message}</p>`;
@@ -1068,6 +1068,7 @@ async function lookupFacing() {
     return;
   }
   resultEl.innerHTML = '<p class="empty">Looking up what\'s ahead...</p>';
+  collapseCamera();
 
   const { latitude, longitude } = currentPosition;
   let url = `/api/nearby?lat=${latitude}&lon=${longitude}`;
@@ -1078,7 +1079,7 @@ async function lookupFacing() {
   try {
     const res = await fetch(url, { signal: activeLookupController.signal });
     const data = await res.json();
-    if (!res.ok) { renderError(data); } else { renderResult(data); collapseCamera(); }
+    if (!res.ok) { renderError(data); } else { renderResult(data); }
   } catch (err) {
     if (err.name !== 'AbortError') {
       resultEl.innerHTML = `<p class="error">Lookup failed: ${err.message}</p>`;
