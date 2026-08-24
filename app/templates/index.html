@@ -269,46 +269,86 @@
      toward a plainer, rule-and-whitespace layout closer to a consulting
      report than a mobile app screen. */
   #printCover { display: none; }
+  /* Print/export report - a standalone investor-deck-style document,
+     not a printout of the app chrome. Forced to a fixed navy/blue
+     palette regardless of the viewer's OS light/dark preference (a
+     report meant to be shared or emailed as a PDF needs one
+     predictable look, not one that shifts with whoever opens it), and
+     built around the same "dark cover, clean white content" structure
+     real investor/board decks use: a full-bleed dark-to-bright-blue
+     gradient title panel, then plain white content pages with strong
+     type contrast and minimal decoration. */
   @media print {
+    :root {
+      --accent: #2456FF; --ink: #0F1B3D; --muted: #6B7280;
+      --border-subtle: #E4E7EF; --surface: #fff; --bg: #fff;
+    }
     * { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
-    body { background: #fff; color: #1a1a1a; }
+    body { background: #fff; color: #0F1B3D; font-family: 'Poppins', Arial, sans-serif; }
     #cameraWrap, .controls, #collapsedBar, header, .action-link,
     #mapSection, #mapView, #resolvedLine, #daftNote { display: none !important; }
     .page { max-width: none; padding: 0; }
+
     #printCover {
-      display: block; margin-bottom: 28px; padding-bottom: 20px;
-      border-bottom: 2px solid #1a1a1a;
+      display: block; margin: 0 0 32px; padding: 52px 44px 36px;
+      background-image:
+        linear-gradient(120deg, transparent 42%, rgba(255,255,255,0.22) 49%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.22) 51%, transparent 58%),
+        linear-gradient(135deg, #0B1330 0%, #17245C 55%, #2456FF 100%);
     }
     #printCover .eyebrow {
-      font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
-      color: #666; margin: 0 0 10px;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
+      color: rgba(255,255,255,0.7); margin: 0 0 16px;
     }
     #printCover h1 {
-      font-size: 30px; font-family: Georgia, 'Times New Roman', serif;
-      font-weight: 400; letter-spacing: -0.01em; color: #1a1a1a; margin: 0 0 6px;
+      font-size: 32px; font-weight: 700; letter-spacing: -0.01em; text-transform: uppercase;
+      line-height: 1.18; color: #fff; margin: 0 0 12px;
     }
-    #printCover .subtitle { font-size: 13px; color: #666; margin: 0 0 18px; }
-    #printCover .kpi-row { display: flex; gap: 36px; flex-wrap: wrap; }
+    #printCover .subtitle {
+      font-size: 13px; font-weight: 400; color: rgba(255,255,255,0.78);
+      margin: 0 0 26px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.25);
+    }
+    #printCover .kpi-row { display: flex; gap: 40px; flex-wrap: wrap; }
     #printCover .kpi-label {
-      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: #666; margin: 0 0 3px;
+      font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+      color: rgba(255,255,255,0.6); margin: 0 0 5px;
     }
-    #printCover .kpi-value { font-size: 22px; font-weight: 600; color: #1a1a1a; }
+    #printCover .kpi-value { font-size: 25px; font-weight: 700; color: #fff; }
+
+    #result { padding: 0 44px; }
     #result section {
       background: none; border: none; box-shadow: none; border-radius: 0;
-      padding: 0; margin: 0 0 18px; page-break-inside: avoid;
+      padding: 0; margin: 0 0 22px; page-break-inside: avoid;
     }
     #result section h3 {
-      font-size: 11px; letter-spacing: 0.08em; color: #444; border-bottom: 1px solid #ccc;
-      padding-bottom: 6px; margin-bottom: 10px;
+      font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      color: #0F1B3D; border-bottom: 2px solid #2456FF;
+      padding-bottom: 8px; margin-bottom: 12px;
     }
-    #result table { page-break-inside: auto; }
+    #result table { page-break-inside: auto; border-collapse: collapse; width: 100%; }
     #result tr { page-break-inside: avoid; }
-    #result .badge { border: 1px solid #999; background: none !important; color: #1a1a1a !important; }
-    a[href]::after { content: ""; } /* suppress default browser URL-after-link in print */
-    #printFooter {
-      display: block; margin-top: 24px; padding-top: 10px; border-top: 1px solid #ccc;
-      font-size: 10px; color: #888;
+    #result table th {
+      background: #0F1B3D; color: #fff; font-weight: 700; font-size: 10.5px;
+      letter-spacing: 0.04em; text-transform: uppercase; text-align: left;
+      padding: 8px 10px;
     }
+    #result table td {
+      font-size: 12px; padding: 8px 10px; border-bottom: 1px solid #E4E7EF;
+    }
+    #result .badge {
+      border: 1px solid #2456FF; background: none !important; color: #0F1B3D !important;
+      font-weight: 600;
+    }
+    a[href]::after { content: ""; } /* suppress default browser URL-after-link in print */
+
+    #printFooter {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 24px;
+      margin: 28px 44px 0; padding-top: 12px; border-top: 1px solid #E4E7EF;
+      font-size: 9px; color: #8A90A3;
+    }
+    #printFooter .footer-note { flex: 1; }
+    #printFooter .footer-date { white-space: nowrap; }
+
+    .area-chart circle.chart-point { fill: #fff; }
   }
   #printFooter { display: none; }
 
@@ -326,10 +366,14 @@
     padding: 6px 10px; border-radius: 6px; white-space: nowrap;
     box-shadow: var(--card-shadow);
   }
-  @media print {
-    .area-chart circle.chart-point { fill: #fff; }
-  }
 </style>
+<!-- Print/export report only - a bold geometric sans for the exported
+     report's investor-deck feel, loaded once as a stylesheet (same
+     pattern as the Leaflet CSS below), never referenced by the
+     on-screen app's own -apple-system stack. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
@@ -833,6 +877,69 @@ async function doSearch() {
   }
 }
 
+// Shared by both the print export and the share-as-file path below, so
+// the cover/footer content can never drift between the two.
+function buildReportCoverFooterHTML(d) {
+  const displayAddress = (d.sale_history && d.sale_history.length)
+    ? d.sale_history[d.sale_history.length - 1].address
+    : d.resolved_canonical;
+  const generated = new Date().toLocaleDateString('en-IE', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  let cover = `<p class="eyebrow">Kerbsight &middot; Property Report</p>`;
+  cover += `<h1>${displayAddress}</h1>`;
+  cover += `<p class="subtitle">${d.county_detected || ''}${d.locality ? ' &middot; ' + d.locality : ''} &middot; Prepared ${generated}</p>`;
+  cover += `<div class="kpi-row">`;
+  if (d.valuation) {
+    cover += `<div><div class="kpi-label">Estimated value today</div>`
+      + `<div class="kpi-value">&euro;${Math.round(d.valuation.estimated_value).toLocaleString()}</div></div>`;
+  }
+  cover += `<div><div class="kpi-label">Recorded sales</div><div class="kpi-value">${d.n_sales}</div></div>`;
+  if (d.locality_stats) {
+    cover += `<div><div class="kpi-label">Locality median</div>`
+      + `<div class="kpi-value">&euro;${d.locality_stats.median_price.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`;
+  }
+  cover += `</div>`;
+
+  const footer = `<span class="footer-note">Kerbsight &middot; Built from the Property Price Register and public planning/zoning/heritage `
+    + `data sources cited throughout this report &middot; Not a valuation or legal advice</span>`
+    + `<span class="footer-date">Generated ${generated}</span>`;
+
+  return { cover, footer, displayAddress };
+}
+
+// Builds a fully self-contained HTML document - the same report markup
+// already rendered in #result, plus the cover/footer, with the print
+// stylesheet's rules re-emitted unconditionally (stripped of their
+// @media print wrapper) so the file looks like the exported report the
+// instant it's opened, not only when actually printed. Used to hand a
+// real report artifact to the share sheet instead of a bare link.
+function buildStandaloneReportHTML(d) {
+  const { cover, footer, displayAddress } = buildReportCoverFooterHTML(d);
+  const allRules = [...document.styleSheets].find(s => !s.href).cssRules;
+  // Two passes, not one: the print rules must be emitted after every
+  // base rule regardless of where @media print happens to sit in the
+  // source stylesheet - found live that #printFooter's base "display:
+  // none" rule sits textually after the @media print block, so a
+  // single document-order pass let it win the cascade and hid the
+  // footer entirely once print rules were unwrapped into plain rules.
+  let baseCSS = '', printCSS = '';
+  for (const rule of allRules) {
+    if (rule.media && rule.conditionText === 'print') {
+      for (const inner of rule.cssRules) printCSS += inner.cssText + '\n';
+    } else {
+      baseCSS += rule.cssText + '\n';
+    }
+  }
+  const css = baseCSS + printCSS;
+  return `<!doctype html><html><head><meta charset="utf-8">`
+    + `<meta name="viewport" content="width=device-width, initial-scale=1">`
+    + `<title>${displayAddress} - Kerbsight Property Report</title>`
+    + `<style>${css}</style></head><body>`
+    + `<div class="page"><div id="printCover">${cover}</div>`
+    + `<div id="result">${document.getElementById('result').innerHTML}</div>`
+    + `<div id="printFooter">${footer}</div></div></body></html>`;
+}
+
 async function shareResult() {
   if (!currentResultData) return;
   const d = currentResultData;
@@ -841,6 +948,26 @@ async function shareResult() {
     ? `Est. value: €${Math.round(d.valuation.estimated_value).toLocaleString()}`
     : `${d.n_sales} sale(s) on record`;
   const shareText = `${d.resolved_canonical} - ${priceLine}`;
+
+  // Share the actual report as a file when the platform supports it,
+  // not just a link back to the app - a self-contained HTML snapshot
+  // styled like the exported report, so it opens looking like a real
+  // document in the recipient's own browser rather than requiring them
+  // to load the app and re-run the search themselves.
+  if (navigator.canShare && navigator.share) {
+    try {
+      const html = buildStandaloneReportHTML(d);
+      const slug = (d.resolved_canonical || 'property').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
+      const file = new File([html], `kerbsight-${slug}-report.html`, { type: 'text/html' });
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({ title: 'Kerbsight Property Report', text: shareText, files: [file] });
+        return;
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return; // user cancelled the share sheet
+      // file-sharing failed for some other reason - fall through to the link-based share below
+    }
+  }
 
   if (navigator.share) {
     try {
@@ -863,8 +990,7 @@ async function shareResult() {
   }
 }
 
-// Builds a standalone cover block + footer (see the print stylesheet)
-// and hands off to the browser's native print dialog, which is what
+// Hands off to the browser's native print dialog, which is what
 // actually produces the PDF ("Save as PDF" as the destination) - no
 // server-side rendering dependency, and it's the one export path that
 // reliably captures the exact same data just rendered on screen rather
@@ -872,30 +998,9 @@ async function shareResult() {
 function exportReportPDF() {
   if (!currentResultData) return;
   const d = currentResultData;
-  const displayAddress = (d.sale_history && d.sale_history.length)
-    ? d.sale_history[d.sale_history.length - 1].address
-    : d.resolved_canonical;
-  const generated = new Date().toLocaleDateString('en-IE', { year: 'numeric', month: 'long', day: 'numeric' });
-
-  let cover = `<p class="eyebrow">Kerbsight &middot; Property Report</p>`;
-  cover += `<h1>${displayAddress}</h1>`;
-  cover += `<p class="subtitle">${d.county_detected || ''}${d.locality ? ' &middot; ' + d.locality : ''} &middot; Prepared ${generated}</p>`;
-  cover += `<div class="kpi-row">`;
-  if (d.valuation) {
-    cover += `<div><div class="kpi-label">Estimated value today</div>`
-      + `<div class="kpi-value">&euro;${Math.round(d.valuation.estimated_value).toLocaleString()}</div></div>`;
-  }
-  cover += `<div><div class="kpi-label">Recorded sales</div><div class="kpi-value">${d.n_sales}</div></div>`;
-  if (d.locality_stats) {
-    cover += `<div><div class="kpi-label">Locality median</div>`
-      + `<div class="kpi-value">&euro;${d.locality_stats.median_price.toLocaleString(undefined, {maximumFractionDigits: 0})}</div></div>`;
-  }
-  cover += `</div>`;
+  const { cover, footer } = buildReportCoverFooterHTML(d);
   document.getElementById('printCover').innerHTML = cover;
-
-  document.getElementById('printFooter').innerHTML =
-    `<p>Kerbsight &middot; Built from the Property Price Register and public planning/zoning/heritage data sources cited `
-    + `throughout this report &middot; Not a valuation or legal advice &middot; Generated ${generated}</p>`;
+  document.getElementById('printFooter').innerHTML = footer;
 
   window.print();
 }
