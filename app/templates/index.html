@@ -471,7 +471,7 @@ function buildComparisonChartSVG(propertySeries, countySeries) {
   // property series only covers years at/after the sale - a contiguous
   // prefix of `years` since it's reversed (most recent first)
   const propYears = years.filter(y => y in propByYear);
-  const propCoords = propYears.map((y, i) => [xFor(i), yForProp(propByYear[y])]);
+  const propCoords = propYears.map((y) => [xFor(years.indexOf(y)), yForProp(propByYear[y])]);
 
   const pathD = (coords) => 'M' + coords.map(c => c.join(',')).join(' L');
   const countyLineD = pathD(countyCoords);
