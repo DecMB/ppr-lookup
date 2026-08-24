@@ -289,11 +289,16 @@
     #mapSection, #mapView, #resolvedLine, #daftNote { display: none !important; }
     .page { max-width: none; padding: 0; }
 
+    /* No diagonal "streak" decoration over the title/KPI text - looked
+       fine in Chrome-based preview testing but a real print-to-PDF
+       export on a real device showed it cutting straight through the
+       address title and hiding a white KPI value against its own
+       brightest point. Address length is dynamic (one line for a short
+       street, three for a long one) so there's no fixed diagonal
+       position that's safe for every property - solid gradient only. */
     #printCover {
       display: block; margin: 0 0 32px; padding: 52px 44px 36px;
-      background-image:
-        linear-gradient(120deg, transparent 42%, rgba(255,255,255,0.22) 49%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.22) 51%, transparent 58%),
-        linear-gradient(135deg, #0B1330 0%, #17245C 55%, #2456FF 100%);
+      background-image: linear-gradient(135deg, #0B1330 0%, #17245C 55%, #2456FF 100%);
     }
     #printCover .eyebrow {
       font-size: 11px; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
@@ -907,67 +912,20 @@ function buildReportCoverFooterHTML(d) {
   return { cover, footer, displayAddress };
 }
 
-// Builds a fully self-contained HTML document - the same report markup
-// already rendered in #result, plus the cover/footer, with the print
-// stylesheet's rules re-emitted unconditionally (stripped of their
-// @media print wrapper) so the file looks like the exported report the
-// instant it's opened, not only when actually printed. Used to hand a
-// real report artifact to the share sheet instead of a bare link.
-function buildStandaloneReportHTML(d) {
-  const { cover, footer, displayAddress } = buildReportCoverFooterHTML(d);
-  const allRules = [...document.styleSheets].find(s => !s.href).cssRules;
-  // Two passes, not one: the print rules must be emitted after every
-  // base rule regardless of where @media print happens to sit in the
-  // source stylesheet - found live that #printFooter's base "display:
-  // none" rule sits textually after the @media print block, so a
-  // single document-order pass let it win the cascade and hid the
-  // footer entirely once print rules were unwrapped into plain rules.
-  let baseCSS = '', printCSS = '';
-  for (const rule of allRules) {
-    if (rule.media && rule.conditionText === 'print') {
-      for (const inner of rule.cssRules) printCSS += inner.cssText + '\n';
-    } else {
-      baseCSS += rule.cssText + '\n';
-    }
-  }
-  const css = baseCSS + printCSS;
-  return `<!doctype html><html><head><meta charset="utf-8">`
-    + `<meta name="viewport" content="width=device-width, initial-scale=1">`
-    + `<title>${displayAddress} - Kerbsight Property Report</title>`
-    + `<style>${css}</style></head><body>`
-    + `<div class="page"><div id="printCover">${cover}</div>`
-    + `<div id="result">${document.getElementById('result').innerHTML}</div>`
-    + `<div id="printFooter">${footer}</div></div></body></html>`;
-}
-
 async function shareResult() {
   if (!currentResultData) return;
   const d = currentResultData;
+  // ?q= is picked up on load (see the bottom of this script) and
+  // re-run immediately, so whoever opens this link lands on the same
+  // resolved result rather than a bare camera view - a link, not a
+  // file, so it always works regardless of what the recipient's device
+  // supports, and always reflects live data rather than a snapshot
+  // that could go stale.
   const shareUrl = `${location.origin}${location.pathname}?q=${encodeURIComponent(d.query || d.resolved_canonical)}`;
   const priceLine = d.valuation
     ? `Est. value: €${Math.round(d.valuation.estimated_value).toLocaleString()}`
     : `${d.n_sales} sale(s) on record`;
   const shareText = `${d.resolved_canonical} - ${priceLine}`;
-
-  // Share the actual report as a file when the platform supports it,
-  // not just a link back to the app - a self-contained HTML snapshot
-  // styled like the exported report, so it opens looking like a real
-  // document in the recipient's own browser rather than requiring them
-  // to load the app and re-run the search themselves.
-  if (navigator.canShare && navigator.share) {
-    try {
-      const html = buildStandaloneReportHTML(d);
-      const slug = (d.resolved_canonical || 'property').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '');
-      const file = new File([html], `kerbsight-${slug}-report.html`, { type: 'text/html' });
-      if (navigator.canShare({ files: [file] })) {
-        await navigator.share({ title: 'Kerbsight Property Report', text: shareText, files: [file] });
-        return;
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') return; // user cancelled the share sheet
-      // file-sharing failed for some other reason - fall through to the link-based share below
-    }
-  }
 
   if (navigator.share) {
     try {
