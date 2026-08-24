@@ -166,9 +166,18 @@
     color: #fff;
   }
 
+  /* padding-top adds a flat 12px buffer on top of the raw safe-area
+     inset, not just the inset alone - a hairline fit against the exact
+     notch/status-bar height leaves zero margin for anything else iOS
+     draws in that band (e.g. the screen-recording indicator, which is
+     taller than the plain status bar and isn't reflected in
+     safe-area-inset-top at all, since that only describes fixed device
+     geometry, not transient system UI). Found live: "Kerbsight" and
+     the heading badge were sitting close enough to the top that they
+     visually collided with status-bar-area content. */
   #cameraTopBar {
     position: absolute; top: 0; left: 0; right: 0; padding: 14px 16px;
-    padding-top: max(14px, env(safe-area-inset-top));
+    padding-top: max(14px, calc(env(safe-area-inset-top) + 12px));
     display: flex; align-items: center; justify-content: space-between; gap: 8px;
     background: linear-gradient(180deg, rgba(0,0,0,0.5), transparent);
   }
