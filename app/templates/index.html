@@ -111,9 +111,15 @@
     background: #0a0a0a; overflow: hidden;
     transition: min-height 320ms var(--ease-out), max-height 320ms var(--ease-out);
   }
+  /* height/padding-top both derive from the safe-area inset so the
+     collapsed bar's clickable text always clears the iPhone status
+     bar/notch instead of rendering underneath it - found live: on a
+     real iPhone the bar had no top inset at all, so "Search again"
+     was drawn behind the status bar and effectively unreachable. */
   #collapsedBar {
     display: none; align-items: center; justify-content: center; gap: 6px;
-    height: 52px; width: 100%; cursor: pointer; font-size: 14px; font-weight: 600;
+    height: calc(52px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top);
+    box-sizing: border-box; width: 100%; cursor: pointer; font-size: 14px; font-weight: 600;
     color: var(--ink); background: var(--surface); border: none; border-bottom: 1px solid var(--border-subtle);
     font-family: inherit;
   }
@@ -135,7 +141,7 @@
      in testing that .no-camera's #cameraFallback{display:flex} was
      otherwise winning by source order and eating clicks meant for the
      collapsed bar underneath it. */
-  #cameraWrap.collapsed { min-height: 0; max-height: 52px; }
+  #cameraWrap.collapsed { min-height: 0; max-height: calc(52px + env(safe-area-inset-top)); }
   #cameraWrap.collapsed #cameraVideo,
   #cameraWrap.collapsed #cameraFallback,
   #cameraWrap.collapsed #cameraTopBar,
