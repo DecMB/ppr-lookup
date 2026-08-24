@@ -556,8 +556,17 @@ function renderResult(data) {
         + `<div class="stat-value">${aSign}${v.annualized_change_pct}%/yr</div></div></div>`;
     }
 
+    if (v.value_trajectory && v.value_trajectory.length > 1) {
+      html += `<p class="note" style="margin-top:16px;">This property's estimated value, ${v.based_on_sale_year} sale price scaled forward to today:</p>`;
+      html += buildAreaChartSVG(v.value_trajectory.map(t => ({
+        label: t.year,
+        value: t.value,
+        tooltip: `&euro;${t.value.toLocaleString(undefined, {maximumFractionDigits: 0})}`,
+      })));
+    }
+
     if (v.price_trend && v.price_trend.length > 1) {
-      html += `<p class="note" style="margin-top:12px;">County median price by year (${data.county_detected}):</p>`;
+      html += `<p class="note" style="margin-top:16px;">For context, county median price by year (${data.county_detected}):</p>`;
       html += buildAreaChartSVG(v.price_trend.map(t => ({
         label: t.year,
         value: t.median,

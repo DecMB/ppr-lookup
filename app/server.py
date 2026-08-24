@@ -240,6 +240,19 @@ def estimate_current_value(county, last_price, last_sale_year):
         for y in trend_years
     ]
 
+    # This property's own last sale price, scaled year-by-year by the same
+    # county-index ratio used for the single "estimated_value" figure above
+    # - not a separate model, just that same scaling computed at every year
+    # instead of only the latest one, so it lands exactly on last_price at
+    # the sale year and exactly on estimated_value at the latest year.
+    # Clipped to years at or after the sale (a value "trajectory" before the
+    # property was last known to have sold isn't a meaningful thing to show).
+    value_trajectory = [
+        {"year": y, "value": round(last_price * (county_index[y]["median"] / base["median"]), 2)}
+        for y in trend_years
+        if int(y) >= int(last_sale_year)
+    ]
+
     return {
         "estimated_value": round(last_price * ratio, 2),
         "based_on_sale_year": last_sale_year,
@@ -247,6 +260,7 @@ def estimate_current_value(county, last_price, last_sale_year):
         "county_price_change_pct": round((ratio - 1) * 100, 1),
         "annualized_change_pct": annualized_change_pct,
         "price_trend": price_trend,
+        "value_trajectory": value_trajectory,
         "index_sample_sizes": {last_sale_year: base["n"], latest_year: latest["n"]},
     }
 
